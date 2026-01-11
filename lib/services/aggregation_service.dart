@@ -3,7 +3,12 @@ import '../utils/geohash_utils.dart';
 
 class AggregationService {
   /// Build indexes from samples and repeaters
-  static AggregationResult buildIndexes(List<Sample> samples, List<Repeater> repeaters) {
+  /// @param coveragePrecision: Geohash precision for coverage squares (4-8, default 6)
+  static AggregationResult buildIndexes(
+    List<Sample> samples, 
+    List<Repeater> repeaters, 
+    {int coveragePrecision = 6}
+  ) {
     final Map<String, Coverage> hashToCoverage = {};
     final Map<String, Map<String, dynamic>> idToRepeaters = {};
     final List<Edge> edgeList = [];
@@ -17,13 +22,26 @@ class AggregationService {
       };
     }
 
-    // Aggregate samples into coverage areas
+    // Group samples by coverage area and analyze for contradictions
+    final Map<String, List<Sample>> coverageToSamples = {};
     for (final sample in samples) {
       final coverageHash = GeohashUtils.coverageKey(
         sample.position.latitude,
         sample.position.longitude,
+        precision: coveragePrecision,
       );
-
+      coverageToSamples.putIfAbsent(coverageHash, () => []);
+      coverageToSamples[coverageHash]!.add(sample);
+    }
+    
+    // Aggregate samples into coverage areas with smart weighting
+    for (final entry in coverageToSamples.entries) {
+      final coverageHash = entry.key;
+      final samplesInArea = entry.value;
+      
+      // Sort by timestamp (newest first)
+      samplesInArea.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      
       // Get or create coverage
       if (!hashToCoverage.containsKey(coverageHash)) {
         final pos = GeohashUtils.posFromHash(coverageHash);
@@ -34,30 +52,80 @@ class AggregationService {
       }
 
       final coverage = hashToCoverage[coverageHash]!;
-
-      // Update coverage stats based on ping success
-      if (sample.pingSuccess == true) {
-        coverage.received += 1; // Successful ping (observer heard us)
+      
+      // Process samples with time-based weighting
+      // Newer samples get more weight, contradicting old samples are discounted
+      for (int i = 0; i < samplesInArea.length; i++) {
+        final sample = samplesInArea[i];
         
-        // Track which repeater actually responded (from sample.path = nodeId)
-        if (sample.path != null && sample.path!.isNotEmpty) {
-          if (!coverage.repeaters.contains(sample.path!)) {
-            coverage.repeaters.add(sample.path!);
+        // Skip GPS-only samples (pingSuccess == null)
+        if (sample.pingSuccess == null) continue;
+        
+        // Calculate age-based weight (newer = more weight)
+        final ageInDays = GeohashUtils.ageInDays(sample.timestamp);
+        double weight = 1.0;
+        
+        // Reduce weight for older samples
+        if (ageInDays > 30) {
+          weight = 0.2; // Very old data, minimal weight
+        } else if (ageInDays > 7) {
+          weight = 0.5; // Week-old data, half weight
+        } else if (ageInDays > 1) {
+          weight = 0.8; // Day-old data, slight reduction
+        }
+        
+        // Check for contradictions with newer samples (up to 10 most recent)
+        bool contradictedByNewer = false;
+        final newerSamples = samplesInArea.sublist(0, i > 10 ? 10 : i);
+        
+        if (newerSamples.isNotEmpty) {
+          // Count how many newer samples contradict this one
+          int contradictions = 0;
+          int agreements = 0;
+          
+          for (final newer in newerSamples) {
+            if (newer.pingSuccess == null) continue;
+            
+            // Check if newer samples consistently show opposite result
+            if (newer.pingSuccess != sample.pingSuccess) {
+              contradictions++;
+            } else {
+              agreements++;
+            }
+          }
+          
+          // If majority of recent samples contradict, heavily discount this sample
+          if (contradictions > agreements && contradictions >= 2) {
+            weight *= 0.1; // Contradicted data gets 10% weight
+            contradictedByNewer = true;
           }
         }
-      } else if (sample.pingSuccess == false) {
-        coverage.lost += 1; // Failed ping (dead zone)
-      }
-      // If pingSuccess is null, it means no ping was attempted (just GPS tracking)
-      
-      if (sample.pingSuccess == true && 
-          (coverage.lastReceived == null || sample.timestamp.isAfter(coverage.lastReceived!))) {
-        coverage.lastReceived = sample.timestamp;
-      }
-      
-      if (coverage.updated == null || 
-          sample.timestamp.isAfter(coverage.updated!)) {
-        coverage.updated = sample.timestamp;
+        
+        // Apply weighted sample to coverage stats
+        if (sample.pingSuccess == true) {
+          coverage.received += weight; // Successful ping (observer heard us)
+          
+          // Track which repeater actually responded (from sample.path = nodeId)
+          if (sample.path != null && sample.path!.isNotEmpty) {
+            if (!coverage.repeaters.contains(sample.path!)) {
+              coverage.repeaters.add(sample.path!);
+            }
+          }
+          
+          // Update lastReceived only if not contradicted
+          if (!contradictedByNewer && 
+              (coverage.lastReceived == null || sample.timestamp.isAfter(coverage.lastReceived!))) {
+            coverage.lastReceived = sample.timestamp;
+          }
+        } else if (sample.pingSuccess == false) {
+          coverage.lost += weight; // Failed ping (dead zone)
+        }
+        
+        // Update timestamp
+        if (coverage.updated == null || 
+            sample.timestamp.isAfter(coverage.updated!)) {
+          coverage.updated = sample.timestamp;
+        }
       }
     }
 

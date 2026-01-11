@@ -76,8 +76,8 @@ class Sample {
 class Coverage {
   final String id; // geohash
   final LatLng position;
-  int received;
-  int lost;
+  double received; // Changed to double to support weighted samples
+  double lost;     // Changed to double to support weighted samples
   DateTime? lastReceived;
   DateTime? updated;
   List<String> repeaters;
@@ -85,8 +85,8 @@ class Coverage {
   Coverage({
     required this.id,
     required this.position,
-    this.received = 0,
-    this.lost = 0,
+    this.received = 0.0,
+    this.lost = 0.0,
     this.lastReceived,
     this.updated,
     List<String>? repeaters,
@@ -107,8 +107,8 @@ class Coverage {
     return Coverage(
       id: json['id'] as String,
       position: LatLng(json['lat'] as double, json['lon'] as double),
-      received: json['rcv'] as int? ?? 0,
-      lost: json['lost'] as int? ?? 0,
+      received: (json['rcv'] as num?)?.toDouble() ?? 0.0,
+      lost: (json['lost'] as num?)?.toDouble() ?? 0.0,
       lastReceived: json['lht'] != null
           ? DateTime.fromMillisecondsSinceEpoch(json['lht'] as int)
           : null,

@@ -30,7 +30,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  static const String appVersion = '1.0.9';
+  static const String appVersion = '1.0.10';
   
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
@@ -48,6 +48,7 @@ class _MapScreenState extends State<MapScreen> {
   bool _autoPingEnabled = false;
   String? _ignoredRepeaterPrefix;
   double _pingIntervalMeters = 805.0; // Default 0.5 miles
+  int _coveragePrecision = 6; // Default precision 6 (~1.2km squares)
   
   // Repeaters
   List<Repeater> _repeaters = [];
@@ -141,8 +142,12 @@ class _MapScreenState extends State<MapScreen> {
     final samples = await _locationService.getAllSamples();
     final count = await _locationService.getSampleCount();
     
-    // Aggregate data
-    final result = AggregationService.buildIndexes(samples, []);
+    // Aggregate data with user's chosen coverage precision
+    final result = AggregationService.buildIndexes(
+      samples, 
+      [],
+      coveragePrecision: _coveragePrecision,
+    );
     
     // Update connection status
     final loraService = _locationService.loraCompanion;
@@ -986,6 +991,73 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  String _getCoverageResolutionDescription() {
+    switch (_coveragePrecision) {
+      case 4:
+        return 'Regional (~20km squares)';
+      case 5:
+        return 'City-level (~5km squares)';
+      case 6:
+        return 'Neighborhood (~1.2km squares)';
+      case 7:
+        return 'Street-level (~153m squares)';
+      case 8:
+        return 'Building-level (~38m squares)';
+      default:
+        return 'Unknown';
+    }
+  }
+
+  Future<void> _setCoverageResolution() async {
+    String? selected = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Coverage Resolution'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Choose the size of coverage squares:'),
+            const SizedBox(height: 16),
+            ListTile(
+              title: const Text('Regional'),
+              subtitle: const Text('~20km squares (precision 4)'),
+              onTap: () => Navigator.pop(context, '4'),
+            ),
+            ListTile(
+              title: const Text('City-level'),
+              subtitle: const Text('~5km squares (precision 5)'),
+              onTap: () => Navigator.pop(context, '5'),
+            ),
+            ListTile(
+              title: const Text('Neighborhood'),
+              subtitle: const Text('~1.2km squares (precision 6, default)'),
+              onTap: () => Navigator.pop(context, '6'),
+            ),
+            ListTile(
+              title: const Text('Street-level'),
+              subtitle: const Text('~153m squares (precision 7)'),
+              onTap: () => Navigator.pop(context, '7'),
+            ),
+            ListTile(
+              title: const Text('Building-level'),
+              subtitle: const Text('~38m squares (precision 8, detailed)'),
+              onTap: () => Navigator.pop(context, '8'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (selected != null) {
+      setState(() {
+        _coveragePrecision = int.parse(selected);
+      });
+      // Reload samples with new precision
+      await _loadSamples();
+      _showSnackBar('Coverage resolution: ${_getCoverageResolutionDescription()}');
+    }
+  }
+
   Future<void> _setIgnoredRepeater() async {
     final controller = TextEditingController(text: _ignoredRepeaterPrefix ?? '');
 
@@ -1158,6 +1230,15 @@ class _MapScreenState extends State<MapScreen> {
               onTap: () {
                 Navigator.pop(context);
                 _setPingInterval();
+              },
+            ),
+            ListTile(
+              title: const Text('Coverage Resolution'),
+              subtitle: Text(_getCoverageResolutionDescription()),
+              trailing: const Icon(Icons.grid_on),
+              onTap: () {
+                Navigator.pop(context);
+                _setCoverageResolution();
               },
             ),
             const Divider(),

@@ -12,9 +12,14 @@ class GeohashUtils {
     return geohash.GeoHash.encode(lat, lon, precision: 8).hash;
   }
 
-  /// Generate a geohash for coverage areas (6 character precision ~1.2km x 610m)
-  static String coverageKey(double lat, double lon) {
-    return geohash.GeoHash.encode(lat, lon, precision: 6).hash;
+  /// Generate a geohash for coverage areas with configurable precision
+  /// Precision 4: ~20km x 20km (regional overview)
+  /// Precision 5: ~5km x 5km (city-level)
+  /// Precision 6: ~1.2km x 610m (default, neighborhood)
+  /// Precision 7: ~153m x 153m (street-level)
+  /// Precision 8: ~38m x 19m (building-level)
+  static String coverageKey(double lat, double lon, {int precision = 6}) {
+    return geohash.GeoHash.encode(lat, lon, precision: precision).hash;
   }
 
   /// Get position from geohash
