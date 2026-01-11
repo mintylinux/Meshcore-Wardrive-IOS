@@ -962,12 +962,13 @@ class LoRaCompanionService {
     }
   }
 
-  /// Handle PUSH_CODE_CHANNEL_ECHO - echo from repeater
+  /// Handle PUSH_CODE_CHANNEL_ECHO (0x88) - actually raw radio log frame
   void _handleChannelEcho(Uint8List data) {
-    final msgData = _protocol.parseChannelMessageFrame(data, isEcho: true);
+    // 0x88 is PUSH_CODE_LOG_RX_DATA - raw log with SNR/RSSI at bytes 0-1
+    final msgData = _protocol.parseRawLogFrame(data);
     if (msgData == null) {
-      _debugLog.logError('Failed to parse channel echo (${data.length} bytes)');
-      print('❌ Failed to parse echo - raw hex: ${data.map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
+      _debugLog.logError('Failed to parse raw log frame (${data.length} bytes)');
+      print('❌ Failed to parse 0x88 frame - raw hex: ${data.map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
       return;
     }
     _processChannelMessage(msgData);

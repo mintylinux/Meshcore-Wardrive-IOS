@@ -30,7 +30,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  static const String appVersion = '1.0.10';
+  static const String appVersion = '1.0.11';
   
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
@@ -501,12 +501,17 @@ class _MapScreenState extends State<MapScreen> {
     final markers = _samples.map((sample) {
       return Marker(
         point: sample.position,
-        width: 8,
-        height: 8,
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.blue.withValues(alpha: 0.6),
-            shape: BoxShape.circle,
+        width: 16,
+        height: 16,
+        child: GestureDetector(
+          onTap: () => _showSampleInfo(sample),
+          child: Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: Colors.blue.withValues(alpha: 0.6),
+              shape: BoxShape.circle,
+            ),
           ),
         ),
       );
@@ -1452,6 +1457,71 @@ class _MapScreenState extends State<MapScreen> {
       await appState.setThemeMode(selected);
       setState(() {}); // Refresh to update map tiles
     }
+  }
+  
+  void _showSampleInfo(Sample sample) {
+    final timestamp = DateFormat('MMM d, yyyy HH:mm:ss').format(sample.timestamp);
+    final hasSignalData = sample.rssi != null || sample.snr != null;
+    final pingStatus = sample.pingSuccess == true 
+        ? '✅ Success' 
+        : sample.pingSuccess == false 
+            ? '❌ Failed' 
+            : '📍 GPS Only';
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sample Info'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text('Status: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                Text(pingStatus),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text('Time: $timestamp', style: const TextStyle(fontSize: 12)),
+            const SizedBox(height: 8),
+            Text('Lat: ${sample.position.latitude.toStringAsFixed(6)}'),
+            Text('Lon: ${sample.position.longitude.toStringAsFixed(6)}'),
+            if (sample.path != null || hasSignalData)
+              const Divider(height: 16),
+            if (sample.path != null)
+              Row(
+                children: [
+                  const Text('Repeater: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text(sample.path!, style: const TextStyle(fontFamily: 'monospace')),
+                ],
+              ),
+            if (hasSignalData)
+              const SizedBox(height: 8),
+            if (sample.rssi != null)
+              Row(
+                children: [
+                  const Text('RSSI: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text('${sample.rssi} dBm'),
+                ],
+              ),
+            if (sample.snr != null)
+              Row(
+                children: [
+                  const Text('SNR: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text('${sample.snr} dB'),
+                ],
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
   
   void _showRepeaterInfo(Repeater repeater) {

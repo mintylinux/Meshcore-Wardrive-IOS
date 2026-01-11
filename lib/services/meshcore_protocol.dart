@@ -422,6 +422,74 @@ class MeshCoreProtocol {
     return payload.toBytes();
   }
 
+  /// Parse PUSH_CODE_LOG_RX_DATA (0x88) - raw radio log frame
+  /// Format: [SNR] [RSSI] [raw_packet_bytes...]
+  /// SNR is multiplied by 4 in firmware, RSSI is raw value
+  /// Returns map with 'snr', 'rssi', and parsed packet data if available
+  Map<String, dynamic>? parseRawLogFrame(Uint8List data) {
+    try {
+      if (data.length < 2) {
+        print('⚠️ Raw log frame too short: ${data.length} bytes');
+        return null;
+      }
+      
+      // SNR at byte 0 (scaled by 4x in firmware)
+      final snrRaw = data[0];
+      final snr = (snrRaw / 4.0).round(); // Convert back to actual SNR
+      
+      // RSSI at byte 1 (raw value)
+      int rssi = data[1];
+      if (rssi > 127) rssi -= 256; // Convert to signed byte
+      
+      print('📻 Raw log frame: SNR=${snr} (raw=$snrRaw), RSSI=$rssi');
+      
+      // If there's more data, it's the raw packet - try to parse sender/repeater
+      String? sender;
+      String? repeater;
+      Uint8List? senderKey;
+      Uint8List? repeaterKey;
+      
+      if (data.length > 34) { // At least channel(1) + sender(32) + pathLen(1)
+        int offset = 2;
+        
+        // Channel index
+        final channelIdx = data[offset++];
+        
+        // Sender public key (32 bytes)
+        if (data.length >= offset + 32) {
+          senderKey = Uint8List.fromList(data.sublist(offset, offset + 32));
+          sender = senderKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('').substring(0, 8).toUpperCase();
+          offset += 32;
+        }
+        
+        // Path length
+        if (data.length > offset) {
+          final pathLen = data[offset++];
+          
+          // First repeater key if path exists
+          if (pathLen > 0 && data.length >= offset + 32) {
+            repeaterKey = Uint8List.fromList(data.sublist(offset, offset + 32));
+            repeater = repeaterKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join('').substring(0, 8).toUpperCase();
+          }
+        }
+        
+        print('  Parsed packet: channel=$channelIdx, sender=$sender, repeater=$repeater');
+      }
+      
+      return {
+        'snr': snr,
+        'rssi': rssi,
+        'sender': sender,
+        'senderKey': senderKey,
+        'repeater': repeater,
+        'repeaterKey': repeaterKey,
+      };
+    } catch (e) {
+      print('Error parsing raw log frame: $e');
+      return null;
+    }
+  }
+  
   /// Parse PUSH_CODE_CHANNEL_MSG_RECV or PUSH_CODE_CHANNEL_ECHO frame
   /// Returns map with 'text', 'repeater' (first repeater public key hex), 'snr', 'rssi'
   Map<String, dynamic>? parseChannelMessageFrame(Uint8List data, {bool isEcho = false}) {
