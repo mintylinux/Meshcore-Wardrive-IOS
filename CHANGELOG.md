@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.0.17 - 2026-01-18
+
+### Added
+- **Portrait mode lock** - App now stays in true north orientation, no longer rotates with device
+- **Unified tracking button** - Play button now starts both GPS tracking and auto-ping together
+- **Simplified upload message** - Success dialog shows just "Upload Complete"
+
+### Removed
+- **Auto-ping toggle switch** - Now controlled by tracking button
+
+### Changed
+- Auto-ping automatically starts when tracking starts (if LoRa connected)
+- Both tracking and auto-ping stop together
+
 ## v1.0.16 - 2026-01-17
 
 ### Fixed
