@@ -19,7 +19,6 @@ A Flutter-based Android application for mapping MeshCore mesh network coverage i
 - Web map upload functionality
 - Debug terminal with logging
 - Light/Dark theme support
-- #meshwar channel integration
 
 ## 🛠️ Development Setup
 
