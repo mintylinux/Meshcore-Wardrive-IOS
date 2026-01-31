@@ -11,6 +11,7 @@ class SettingsService {
   static const String _coveragePrecisionKey = 'coverage_precision';
   static const String _ignoredRepeaterPrefixKey = 'ignored_repeater_prefix';
   static const String _includeOnlyRepeatersKey = 'include_only_repeaters';
+  static const String _filterEdgesByWhitelistKey = 'filter_edges_by_whitelist';
   
   Future<bool> getShowSamples() async {
     final prefs = await SharedPreferences.getInstance();
@@ -120,5 +121,16 @@ class SettingsService {
     } else {
       await prefs.setString(_includeOnlyRepeatersKey, value);
     }
+  }
+  
+  /// Whether to filter edges (purple lines) by the Include Only Repeaters whitelist
+  Future<bool> getFilterEdgesByWhitelist() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_filterEdgesByWhitelistKey) ?? false;
+  }
+  
+  Future<void> setFilterEdgesByWhitelist(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_filterEdgesByWhitelistKey, value);
   }
 }

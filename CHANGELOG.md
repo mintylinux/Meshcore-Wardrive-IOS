@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.0.25 - 2026-01-31
+
+### Fixed
+- **Upload Reliability**: Fixed upload failures with large datasets (1000+ samples)
+  - Uploads now split into batches of 100 samples to prevent timeouts
+  - Increased timeout from 30 seconds to 60 seconds per batch
+  - Automatic retry logic: failed batches are retried once before giving up
+  - Progress feedback: UI shows "Uploading batch X of Y" during multi-batch uploads
+  - Better error messages: shows which batch failed and why
+  - Resolves "Failed to Upload Error: 500" issues reported by users
+
+### Improved
+- Upload process is now more reliable for users with days of accumulated data
+- Clear progress indication during large uploads
+- Failed uploads now provide specific error details for troubleshooting
+
 ## v1.0.24 - 2026-01-26
 
 ### Added

@@ -135,9 +135,14 @@ class AggregationService {
       for (final repeaterId in coverage.repeaters) {
         final repeaterData = idToRepeaters[repeaterId];
         if (repeaterData != null) {
+          final repeater = repeaterData['repeater'] as Repeater;
+          // Skip repeaters with location set to 0,0 (invalid/unknown location)
+          if (repeater.position.latitude == 0.0 && repeater.position.longitude == 0.0) {
+            continue;
+          }
           edgeList.add(Edge(
             coverage: coverage,
-            repeater: repeaterData['repeater'] as Repeater,
+            repeater: repeater,
           ));
         }
       }

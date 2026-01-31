@@ -56,6 +56,7 @@ class _MapScreenState extends State<MapScreen> {
   bool _autoPingEnabled = false;
   String? _ignoredRepeaterPrefix;
   String? _includeOnlyRepeaters; // Comma-separated list of repeater prefixes to show
+  bool _filterEdgesByWhitelist = false; // Whether to apply whitelist to edges
   double _pingIntervalMeters = 805.0; // Default 0.5 miles
   int _coveragePrecision = 6; // Default precision 6 (~1.2km squares)
   
@@ -155,6 +156,7 @@ class _MapScreenState extends State<MapScreen> {
     final coveragePrecision = await _settingsService.getCoveragePrecision();
     final ignoredPrefix = await _settingsService.getIgnoredRepeaterPrefix();
     final includeOnly = await _settingsService.getIncludeOnlyRepeaters();
+    final filterEdges = await _settingsService.getFilterEdgesByWhitelist();
     
     setState(() {
       _showSamples = showSamples;
@@ -167,6 +169,7 @@ class _MapScreenState extends State<MapScreen> {
       _coveragePrecision = coveragePrecision;
       _ignoredRepeaterPrefix = ignoredPrefix;
       _includeOnlyRepeaters = includeOnly;
+      _filterEdgesByWhitelist = filterEdges;
     });
     
     // Apply to services
@@ -202,6 +205,22 @@ class _MapScreenState extends State<MapScreen> {
       coveragePrecision: _coveragePrecision,
     );
     
+    // Combine repeaters from both LoRa service (live) and aggregation result (historical)
+    // Use a map to deduplicate by ID, preferring live data when available
+    final Map<String, Repeater> repeaterMap = {};
+    
+    // First add historical repeaters from samples
+    for (final repeater in result.repeaters) {
+      repeaterMap[repeater.id] = repeater;
+    }
+    
+    // Then overlay with live discovered repeaters (these have fresher data)
+    for (final repeater in discoveredRepeaters) {
+      repeaterMap[repeater.id] = repeater;
+    }
+    
+    final combinedRepeaters = repeaterMap.values.toList();
+    
     setState(() {
       _samples = samples;
       _sampleCount = count;
@@ -209,7 +228,7 @@ class _MapScreenState extends State<MapScreen> {
       _loraConnected = loraService.isDeviceConnected;
       _connectionType = loraService.connectionType;
       _autoPingEnabled = _locationService.isAutoPingEnabled;
-      _repeaters = discoveredRepeaters;
+      _repeaters = combinedRepeaters;
     });
   }
 
@@ -250,8 +269,11 @@ class _MapScreenState extends State<MapScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Clear Map History'),
-        content: const Text('This will delete all recorded samples and coverage from the map. Continue?'),
+        title: const Text('Clear Map History?'),
+        content: Text(
+          'This will permanently delete all $_sampleCount samples and coverage data from the map.\n\nThis action cannot be undone.',
+          style: const TextStyle(fontSize: 14),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -259,7 +281,8 @@ class _MapScreenState extends State<MapScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Clear'),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete All'),
           ),
         ],
       ),
@@ -268,7 +291,7 @@ class _MapScreenState extends State<MapScreen> {
     if (confirmed == true) {
       await _locationService.clearAllSamples();
       await _loadSamples();
-      _showSnackBar('Map history cleared');
+      _showSnackBar('Deleted $_sampleCount samples');
     }
   }
 
@@ -691,7 +714,18 @@ class _MapScreenState extends State<MapScreen> {
   Widget _buildEdgeLayer() {
     if (_aggregationResult == null) return const SizedBox.shrink();
     
-    final polylines = _aggregationResult!.edges.map((edge) {
+    // Filter edges by whitelist if enabled
+    var edges = _aggregationResult!.edges;
+    
+    if (_filterEdgesByWhitelist && _includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty) {
+      final allowedPrefixes = _includeOnlyRepeaters!.split(',').map((s) => s.trim().toUpperCase()).toList();
+      edges = edges.where((edge) {
+        final repeaterId = edge.repeater.id.toUpperCase();
+        return allowedPrefixes.any((prefix) => repeaterId.startsWith(prefix));
+      }).toList();
+    }
+    
+    final polylines = edges.map((edge) {
       return Polyline(
         points: [edge.coverage.position, edge.repeater.position],
         color: Colors.purple.withValues(alpha: 0.6),  // Increased from 0.3 to 0.6
@@ -777,123 +811,71 @@ class _MapScreenState extends State<MapScreen> {
       right: 16,
       child: Card(
         child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
             children: [
-              // Connection Status
-              Row(
-                children: [
-                  Icon(
-                    _loraConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
-                    size: 16,
-                    color: _loraConnected ? Colors.green : Colors.grey,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    _loraConnected 
-                        ? (_connectionType == ConnectionType.usb ? 'USB' : 'BT')
-                        : 'No LoRa',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: _loraConnected ? Colors.green : Colors.grey,
-                    ),
-                  ),
-                  if (_loraConnected && _batteryPercent != null)
-                    const SizedBox(width: 4),
-                  if (_loraConnected && _batteryPercent != null)
-                    Icon(
-                      _getBatteryIcon(_batteryPercent!),
-                      size: 14,
-                      color: _getBatteryColor(_batteryPercent!),
-                    ),
-                  if (_loraConnected && _batteryPercent != null)
-                    const SizedBox(width: 2),
-                  if (_loraConnected && _batteryPercent != null)
-                    Text(
-                      '$_batteryPercent%',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: _getBatteryColor(_batteryPercent!),
-                      ),
-                    ),
-                  const Spacer(),
-                  if (!_loraConnected)
-                    TextButton(
-                      onPressed: _showConnectionDialog,
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        minimumSize: Size.zero,
-                      ),
-                      child: const Text('Connect', style: TextStyle(fontSize: 12)),
-                    ),
-                  if (_loraConnected)
-                    IconButton(
-                      icon: const Icon(Icons.more_vert, size: 20),
-                      onPressed: _disconnectLoRa,
-                      tooltip: 'Disconnect',
-                    ),
-                  if (_loraConnected)
-                    IconButton(
-                      icon: const Icon(Icons.send, size: 20),
-                      onPressed: _manualPing,
-                      tooltip: 'Manual Ping',
-                      color: Colors.blue,
-                    ),
-                ],
+              // Connection Status Icon
+              Icon(
+                _loraConnected ? Icons.bluetooth_connected : Icons.bluetooth_disabled,
+                size: 16,
+                color: _loraConnected ? Colors.green : Colors.grey,
               ),
-              const Divider(height: 16),
-              // Stats
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Samples: $_sampleCount',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  Text(
-                    'Coverage: ${_aggregationResult?.coverages.length ?? 0}',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: _exportData,
-                      icon: const Icon(Icons.upload, size: 18),
-                      label: const Text('Export'),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: _importData,
-                      icon: const Icon(Icons.download, size: 18),
-                      label: const Text('Import'),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              ElevatedButton.icon(
-                onPressed: _clearData,
-                icon: const Icon(Icons.delete, size: 18),
-                label: const Text('Clear Map'),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  minimumSize: const Size(double.infinity, 36),
+              const SizedBox(width: 4),
+              Text(
+                _loraConnected 
+                    ? (_connectionType == ConnectionType.usb ? 'USB' : 'BT')
+                    : 'No LoRa',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: _loraConnected ? Colors.green : Colors.grey,
                 ),
               ),
+              if (_loraConnected && _batteryPercent != null)
+                const SizedBox(width: 4),
+              if (_loraConnected && _batteryPercent != null)
+                Icon(
+                  _getBatteryIcon(_batteryPercent!),
+                  size: 14,
+                  color: _getBatteryColor(_batteryPercent!),
+                ),
+              if (_loraConnected && _batteryPercent != null)
+                const SizedBox(width: 2),
+              if (_loraConnected && _batteryPercent != null)
+                Text(
+                  '$_batteryPercent%',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: _getBatteryColor(_batteryPercent!),
+                  ),
+                ),
+              const SizedBox(width: 12),
+              const Text('•', style: TextStyle(color: Colors.grey)),
+              const SizedBox(width: 12),
+              // Stats
+              Text(
+                'Samples: $_sampleCount',
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+              ),
+              const Spacer(),
+              // Connect button or Manual Ping
+              if (!_loraConnected)
+                TextButton(
+                  onPressed: _showConnectionDialog,
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    minimumSize: Size.zero,
+                  ),
+                  child: const Text('Connect', style: TextStyle(fontSize: 12)),
+                ),
+              if (_loraConnected)
+                IconButton(
+                  icon: const Icon(Icons.send, size: 18),
+                  onPressed: _manualPing,
+                  tooltip: 'Manual Ping',
+                  color: Colors.blue,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
             ],
           ),
         ),
@@ -1331,25 +1313,26 @@ class _MapScreenState extends State<MapScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: DraggableScrollableSheet(
-          initialChildSize: 0.7,
-          minChildSize: 0.5,
-          maxChildSize: 0.9,
-          expand: false,
-          builder: (context, scrollController) => Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 16,
-              bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
-            ),
-            child: SingleChildScrollView(
-              controller: scrollController,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => SafeArea(
+          child: DraggableScrollableSheet(
+            initialChildSize: 0.7,
+            minChildSize: 0.5,
+            maxChildSize: 0.9,
+            expand: false,
+            builder: (context, scrollController) => Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                top: 16,
+                bottom: 16 + MediaQuery.of(context).viewInsets.bottom,
+              ),
+              child: SingleChildScrollView(
+                controller: scrollController,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
             Row(
               children: [
                 const Text(
@@ -1371,8 +1354,8 @@ class _MapScreenState extends State<MapScreen> {
                 setState(() {
                   _showCoverage = value;
                 });
+                setModalState(() {});
                 await _settingsService.setShowCoverage(value);
-                Navigator.pop(context);
               },
             ),
             SwitchListTile(
@@ -1382,8 +1365,8 @@ class _MapScreenState extends State<MapScreen> {
                 setState(() {
                   _showSamples = value;
                 });
+                setModalState(() {});
                 await _settingsService.setShowSamples(value);
-                Navigator.pop(context);
               },
             ),
             SwitchListTile(
@@ -1393,8 +1376,8 @@ class _MapScreenState extends State<MapScreen> {
                 setState(() {
                   _showEdges = value;
                 });
+                setModalState(() {});
                 await _settingsService.setShowEdges(value);
-                Navigator.pop(context);
               },
             ),
             SwitchListTile(
@@ -1404,8 +1387,8 @@ class _MapScreenState extends State<MapScreen> {
                 setState(() {
                   _showRepeaters = value;
                 });
+                setModalState(() {});
                 await _settingsService.setShowRepeaters(value);
-                Navigator.pop(context);
               },
             ),
             SwitchListTile(
@@ -1416,32 +1399,30 @@ class _MapScreenState extends State<MapScreen> {
                 setState(() {
                   _showGpsSamples = value;
                 });
+                setModalState(() {});
                 await _settingsService.setShowGpsSamples(value);
-                Navigator.pop(context);
               },
             ),
             SwitchListTile(
               title: const Text('Show Successful Pings Only'),
               subtitle: const Text('Hide failed pings and GPS-only samples'),
               value: _showSuccessfulOnly,
-              onChanged: (value) async {
+              onChanged: (value) {
                 setState(() {
                   _showSuccessfulOnly = value;
                 });
-                Navigator.pop(context);
-                _showSnackBar(value ? 'Showing successful only' : 'Showing all samples');
+                setModalState(() {});
               },
             ),
             SwitchListTile(
               title: const Text('Lock Rotation to North'),
               subtitle: const Text('Prevent map rotation'),
               value: _lockRotationNorth,
-              onChanged: (value) async {
+              onChanged: (value) {
                 setState(() {
                   _lockRotationNorth = value;
                 });
-                Navigator.pop(context);
-                _showSnackBar(value ? 'Rotation locked' : 'Rotation unlocked');
+                setModalState(() {});
               },
             ),
             ListTile(
@@ -1489,7 +1470,6 @@ class _MapScreenState extends State<MapScreen> {
                     _colorMode = value!;
                   });
                   await _settingsService.setColorMode(value!);
-                  Navigator.pop(context);
                 },
               ),
             ),
@@ -1515,6 +1495,18 @@ class _MapScreenState extends State<MapScreen> {
                 _setIncludeOnlyRepeaters();
               },
             ),
+            SwitchListTile(
+              title: const Text('Apply Whitelist to Edges'),
+              subtitle: const Text('Only show edges for whitelisted repeaters'),
+              value: _filterEdgesByWhitelist,
+              onChanged: (value) async {
+                setState(() {
+                  _filterEdgesByWhitelist = value;
+                });
+                setModalState(() {});
+                await _settingsService.setFilterEdgesByWhitelist(value);
+              },
+            ),
             ListTile(
               title: const Text('Ping Interval'),
               subtitle: Text(_getPingIntervalDescription()),
@@ -1531,6 +1523,43 @@ class _MapScreenState extends State<MapScreen> {
               onTap: () {
                 Navigator.pop(context);
                 _setCoverageResolution();
+              },
+            ),
+            const Divider(),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                'Data Management',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ),
+            ListTile(
+              title: const Text('Export Data'),
+              subtitle: const Text('Save samples to file'),
+              leading: const Icon(Icons.upload),
+              trailing: const Icon(Icons.arrow_forward),
+              onTap: () {
+                Navigator.pop(context);
+                _exportData();
+              },
+            ),
+            ListTile(
+              title: const Text('Import Data'),
+              subtitle: const Text('Load samples from file'),
+              leading: const Icon(Icons.download),
+              trailing: const Icon(Icons.arrow_forward),
+              onTap: () {
+                Navigator.pop(context);
+                _importData();
+              },
+            ),
+            ListTile(
+              title: const Text('Clear Map'),
+              subtitle: const Text('Delete all samples and coverage'),
+              leading: const Icon(Icons.delete, color: Colors.red),
+              onTap: () {
+                Navigator.pop(context);
+                _clearData();
               },
             ),
             const Divider(),
@@ -1569,12 +1598,13 @@ class _MapScreenState extends State<MapScreen> {
               },
             ),
             ListTile(
-              title: const Text('Configure API'),
-              subtitle: const Text('Set upload URL'),
-              leading: const Icon(Icons.settings),
+              title: const Text('Manage Upload Sites'),
+              subtitle: const Text('Add/edit upload endpoints'),
+              leading: const Icon(Icons.dns),
+              trailing: const Icon(Icons.arrow_forward),
               onTap: () {
                 Navigator.pop(context);
-                _configureUploadUrl();
+                _manageUploadSites();
               },
             ),
             const Divider(),
@@ -1611,6 +1641,7 @@ class _MapScreenState extends State<MapScreen> {
           ),
         ),
       ),
+    ),
     );
   }
   
@@ -2034,18 +2065,42 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _uploadSamples() async {
-    // Show loading dialog
+    // Check if multiple sites are selected
+    final selectedSites = await _uploadService.getSelectedEndpoints();
+    final endpoints = await _uploadService.getUploadEndpoints();
+    
+    // Track progress state
+    int currentBatch = 0;
+    int totalBatches = 0;
+    String currentSite = '';
+    
+    // Show loading dialog with progress
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 16),
-            Text('Uploading samples...'),
-          ],
-        ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                Text(
+                  currentSite.isNotEmpty
+                      ? 'Uploading to $currentSite...'
+                      : 'Uploading samples...',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                if (totalBatches > 1)
+                  Text(
+                    'Batch $currentBatch of $totalBatches',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+              ],
+            ),
+          );
+        },
       ),
     );
 
@@ -2068,16 +2123,85 @@ class _MapScreenState extends State<MapScreen> {
         }
       }
       
-      final result = await _uploadService.uploadAllSamples(repeaterNames: repeaterNames);
+      Map<String, UploadResult> results;
+      
+      if (selectedSites.length > 1) {
+        // Upload to multiple sites
+        results = await _uploadService.uploadToSelectedEndpoints(
+          repeaterNames: repeaterNames,
+          onProgress: (siteName, current, total) {
+            if (mounted) {
+              currentSite = siteName;
+              currentBatch = current;
+              totalBatches = total;
+            }
+          },
+        );
+      } else {
+        // Single site upload (original behavior)
+        final result = await _uploadService.uploadAllSamples(
+          repeaterNames: repeaterNames,
+          onProgress: (current, total) {
+            if (mounted) {
+              currentBatch = current;
+              totalBatches = total;
+            }
+          },
+        );
+        results = {'Upload': result};
+      }
       
       if (mounted) {
         Navigator.pop(context); // Close loading dialog
         
+        // Show results
+        final allSuccess = results.values.every((r) => r.success);
+        final successCount = results.values.where((r) => r.success).length;
+        
         showDialog(
           context: context,
           builder: (context) => AlertDialog(
-            title: Text(result.success ? 'Upload Complete' : 'Upload Failed'),
-            content: Text(result.success ? 'Upload Complete' : result.message),
+            title: Text(allSuccess ? 'Upload Complete' : 'Upload Results'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (results.length > 1)
+                  Text('Uploaded to $successCount of ${results.length} sites'),
+                const SizedBox(height: 8),
+                ...results.entries.map((entry) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        Icon(
+                          entry.value.success ? Icons.check_circle : Icons.error,
+                          color: entry.value.success ? Colors.green : Colors.red,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                entry.key,
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              if (!entry.value.success)
+                                Text(
+                                  entry.value.message,
+                                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ],
+            ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context),
@@ -2095,59 +2219,174 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  Future<void> _configureUploadUrl() async {
-    final currentUrl = await _uploadService.getApiUrl();
-    final controller = TextEditingController(text: currentUrl);
-
-    final confirmed = await showDialog<bool>(
+  Future<void> _manageUploadSites() async {
+    final endpoints = await _uploadService.getUploadEndpoints();
+    final selectedNames = await _uploadService.getSelectedEndpoints();
+    
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Manage Upload Sites'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Select which sites to upload to:',
+                  style: TextStyle(fontSize: 13, color: Colors.grey),
+                ),
+                const SizedBox(height: 12),
+                if (endpoints.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(20),
+                    child: Text('No upload sites configured'),
+                  )
+                else
+                  ...endpoints.map((endpoint) {
+                    final isSelected = selectedNames.contains(endpoint.name);
+                    return CheckboxListTile(
+                      title: Text(endpoint.name),
+                      subtitle: Text(
+                        endpoint.url,
+                        style: const TextStyle(fontSize: 11),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      value: isSelected,
+                      onChanged: (value) {
+                        setState(() {
+                          if (value == true) {
+                            if (!selectedNames.contains(endpoint.name)) {
+                              selectedNames.add(endpoint.name);
+                            }
+                          } else {
+                            selectedNames.remove(endpoint.name);
+                          }
+                        });
+                      },
+                      secondary: IconButton(
+                        icon: const Icon(Icons.delete, size: 20, color: Colors.red),
+                        onPressed: () async {
+                          final confirmed = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              title: const Text('Delete Site'),
+                              content: Text('Delete "${endpoint.name}"?'),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text('Cancel'),
+                                ),
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                                  child: const Text('Delete'),
+                                ),
+                              ],
+                            ),
+                          );
+                          
+                          if (confirmed == true) {
+                            endpoints.remove(endpoint);
+                            selectedNames.remove(endpoint.name);
+                            await _uploadService.setUploadEndpoints(endpoints);
+                            await _uploadService.setSelectedEndpoints(selectedNames);
+                            setState(() {});
+                          }
+                        },
+                      ),
+                    );
+                  }).toList(),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton.icon(
+              onPressed: () async {
+                final result = await _showAddEndpointDialog();
+                if (result != null) {
+                  endpoints.add(result);
+                  selectedNames.add(result.name);
+                  await _uploadService.setUploadEndpoints(endpoints);
+                  await _uploadService.setSelectedEndpoints(selectedNames);
+                  setState(() {});
+                }
+              },
+              icon: const Icon(Icons.add),
+              label: const Text('Add Site'),
+            ),
+            const Spacer(),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                await _uploadService.setSelectedEndpoints(selectedNames);
+                Navigator.pop(context);
+                _showSnackBar('Upload sites updated');
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  Future<UploadEndpoint?> _showAddEndpointDialog() async {
+    final nameController = TextEditingController();
+    final urlController = TextEditingController();
+    
+    return await showDialog<UploadEndpoint>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Configure Upload URL'),
+        title: const Text('Add Upload Site'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Enter the URL of your Cloudflare Pages API endpoint:',
-              style: TextStyle(fontSize: 13),
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: 'Site Name',
+                hintText: 'e.g., My Personal Map',
+              ),
+              autofocus: true,
             ),
             const SizedBox(height: 12),
             TextField(
-              controller: controller,
+              controller: urlController,
               decoration: const InputDecoration(
                 labelText: 'API URL',
                 hintText: 'https://your-site.pages.dev/api/samples',
-                isDense: true,
               ),
               keyboardType: TextInputType.url,
-            ),
-            const SizedBox(height: 12),
-            TextButton.icon(
-              onPressed: () {
-                controller.text = UploadService.defaultApiUrl;
-              },
-              icon: const Icon(Icons.restore, size: 16),
-              label: const Text('Reset to default', style: TextStyle(fontSize: 12)),
             ),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(context),
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Save'),
+            onPressed: () {
+              if (nameController.text.isNotEmpty && urlController.text.isNotEmpty) {
+                Navigator.pop(
+                  context,
+                  UploadEndpoint(
+                    name: nameController.text,
+                    url: urlController.text,
+                  ),
+                );
+              }
+            },
+            child: const Text('Add'),
           ),
         ],
       ),
     );
-
-    if (confirmed == true) {
-      await _uploadService.setApiUrl(controller.text);
-      _showSnackBar('Upload URL saved');
-    }
   }
   
 }
