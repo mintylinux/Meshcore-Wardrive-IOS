@@ -13,6 +13,10 @@
   - Useful for analyzing coverage from specific repeaters
 
 ### Fixed
+- **Upload Sites List UI**: Fixed "Manage Upload Sites" dialog expanding as white box down the screen
+  - Removed problematic ConstrainedBox and SingleChildScrollView wrappers
+  - Uses simple Column with mainAxisSize.min for proper sizing
+  - Dialog now stays within its window boundaries
 - **Multi-Site Upload Tracking**: Samples can now be uploaded to multiple endpoints independently
   - Each endpoint tracks which samples it has received separately
   - Uploading to default endpoint no longer blocks uploading to custom endpoints
