@@ -21,6 +21,10 @@ class LocationService {
   double _pingIntervalMeters = 805.0; // Default 0.5 miles
   LatLng? _lastPingPosition;
   
+  // Distance tracking
+  double _totalDistanceMeters = 0.0;
+  LatLng? _lastPosition;
+  
   // Stream for broadcasting current position
   final _currentPositionController = StreamController<LatLng>.broadcast();
   Stream<LatLng> get currentPositionStream => _currentPositionController.stream;
@@ -32,6 +36,10 @@ class LocationService {
   // Stream for broadcasting ping events
   final _pingEventController = StreamController<String>.broadcast();
   Stream<String> get pingEventStream => _pingEventController.stream;
+  
+  // Stream for broadcasting total distance updates
+  final _totalDistanceController = StreamController<double>.broadcast();
+  Stream<double> get totalDistanceStream => _totalDistanceController.stream;
 
   /// Check if location permissions are granted
   Future<bool> checkPermissions() async {
@@ -178,6 +186,12 @@ class LocationService {
       print('Wakelock enabled - app will stay active during tracking');
 
       _isTracking = true;
+      
+      // Reset distance tracking for new session
+      _totalDistanceMeters = 0.0;
+      _lastPosition = null;
+      _totalDistanceController.add(_totalDistanceMeters);
+      
       await _logger.logServiceEvent('Tracking started successfully');
       return true;
     } catch (e) {
@@ -224,11 +238,33 @@ class LocationService {
   
   /// Get current ping interval in meters
   double get pingIntervalMeters => _pingIntervalMeters;
+  
+  /// Get total distance traveled in meters
+  double get totalDistanceMeters => _totalDistanceMeters;
+  
+  /// Get total distance traveled in miles
+  double get totalDistanceMiles => _totalDistanceMeters / 1609.34;
+  
+  /// Get total distance traveled in kilometers
+  double get totalDistanceKm => _totalDistanceMeters / 1000.0;
 
   /// Handle new position from location stream
   void _handleNewPosition(Position position) async {
     final latLng = LatLng(position.latitude, position.longitude);
     await _logger.logLocationEvent('GPS update: ${latLng.latitude}, ${latLng.longitude}, accuracy: ${position.accuracy}m');
+    
+    // Calculate distance traveled
+    if (_lastPosition != null) {
+      final distanceMeters = Geolocator.distanceBetween(
+        _lastPosition!.latitude,
+        _lastPosition!.longitude,
+        latLng.latitude,
+        latLng.longitude,
+      );
+      _totalDistanceMeters += distanceMeters;
+      _totalDistanceController.add(_totalDistanceMeters);
+    }
+    _lastPosition = latLng;
     
     // Broadcast current position to listeners
     _currentPositionController.add(latLng);
@@ -326,7 +362,7 @@ class LocationService {
       final pingResult = await _loraCompanion.ping(
         latitude: latLng.latitude,
         longitude: latLng.longitude,
-        timeoutSeconds: 20,
+        timeoutSeconds: 30,
       );
       
       final pingSuccess = pingResult.status == PingStatus.success;
@@ -458,6 +494,7 @@ class LocationService {
     _currentPositionController.close();
     _sampleSavedController.close();
     _pingEventController.close();
+    _totalDistanceController.close();
     _loraCompanion.dispose();
   }
 }

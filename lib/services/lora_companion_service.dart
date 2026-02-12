@@ -556,7 +556,7 @@ class LoRaCompanionService {
   Future<PingResult> ping({
     double? latitude,
     double? longitude,
-    int timeoutSeconds = 10,
+    int timeoutSeconds = 30,
   }) async {
     if (!isDeviceConnected) {
       return PingResult(

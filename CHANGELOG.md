@@ -1,5 +1,42 @@
 # Changelog
 
+## v1.0.26 - 2026-02-12
+
+### Fixed
+- **Ping Timeout**: Increased ping timeout from 20 seconds to 30 seconds to respect repeater rate limits
+  - Repeaters are rate-limited to 4 responses per 120 seconds (30 seconds between responses)
+  - Previous 20-second timeout could trigger pings too quickly at highway speeds
+  - New 30-second timeout ensures at least 60 seconds between pings (30s travel + 30s timeout)
+  - Prevents overwhelming single repeaters in low-density areas
+
+### Added
+- **Miles Traveled Tracking**: Display cumulative distance traveled during tracking sessions
+  - Shows distance in control panel when tracking is active
+  - Supports both miles and kilometers (configurable in settings)
+  - Distance resets at the start of each new tracking session
+  - Updates in real-time as you move
+- **Screenshot Capture**: Take clean map screenshots without UI clutter
+  - New camera button in app bar to capture screenshots
+  - Automatically hides UI elements, control panel, floating buttons, and user location marker
+  - Saves high-quality PNG to device gallery
+  - Option to share screenshot immediately after capture
+  - Perfect for sharing coverage maps with others
+- **Color Blind Accessibility Mode**: Alternative color palettes for users with color vision deficiencies
+  - Support for Deuteranopia (red-green, most common)
+  - Support for Protanopia (red-green)
+  - Support for Tritanopia (blue-yellow)
+  - Applies to coverage boxes, sample markers, and repeater icons
+  - Normal mode uses traditional green/red colors
+  - Color blind modes use blue/orange, blue/yellow, or pink/teal palettes
+  - Configurable in settings menu
+
+### Technical
+- Added distance tracking streams to LocationService
+- Created ColorBlindPalette utility class with scientifically-designed accessible color schemes
+- Modified AggregationService to accept color blind mode parameter
+- Integrated screenshot package for high-quality image capture
+- Added image_gallery_saver for saving screenshots to device
+
 ## v1.0.25 - 2026-01-31
 
 ### Added

@@ -14,6 +14,7 @@ import '../services/database_service.dart';
 import '../services/upload_service.dart';
 import '../services/settings_service.dart';
 import '../utils/geohash_utils.dart';
+import '../utils/color_blind_palette.dart';
 import 'package:geohash_plus/geohash_plus.dart' as geohash;
 import 'package:usb_serial/usb_serial.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -21,6 +22,9 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:screenshot/screenshot.dart';
+import 'package:saver_gallery/saver_gallery.dart';
+import 'dart:typed_data';
 import 'debug_log_screen.dart';
 import 'debug_diagnostics_screen.dart';
 import '../main.dart';
@@ -40,6 +44,7 @@ class _MapScreenState extends State<MapScreen> {
   final MapController _mapController = MapController();
   final UploadService _uploadService = UploadService();
   final SettingsService _settingsService = SettingsService();
+  final ScreenshotController _screenshotController = ScreenshotController();
   
   bool _isTracking = false;
   int _sampleCount = 0;
@@ -68,9 +73,20 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<LatLng>? _positionSubscription;
   StreamSubscription<void>? _sampleSavedSubscription;
   StreamSubscription<String>? _pingEventSubscription;
+  StreamSubscription<double>? _distanceSubscription;
   
   // Ping visual indicator
   bool _showPingPulse = false;
+  
+  // Distance tracking
+  double _totalDistance = 0.0;
+  String _distanceUnit = 'miles';
+  
+  // Color blind mode
+  String _colorBlindMode = 'normal';
+  
+  // Screenshot mode - hide UI elements
+  bool _hideUIForScreenshot = false;
   
   // LoRa connection status
   bool _loraConnected = false;
@@ -136,6 +152,17 @@ class _MapScreenState extends State<MapScreen> {
       }
     });
     
+    // Subscribe to distance updates
+    _distanceSubscription = _locationService.totalDistanceStream.listen((distance) {
+      if (mounted) {
+        setState(() {
+          _totalDistance = _distanceUnit == 'miles' 
+              ? _locationService.totalDistanceMiles 
+              : _locationService.totalDistanceKm;
+        });
+      }
+    });
+    
     await _loadSamples();
     await _getCurrentLocation();
     
@@ -157,6 +184,8 @@ class _MapScreenState extends State<MapScreen> {
     final ignoredPrefix = await _settingsService.getIgnoredRepeaterPrefix();
     final includeOnly = await _settingsService.getIncludeOnlyRepeaters();
     final filterEdges = await _settingsService.getFilterEdgesByWhitelist();
+    final distanceUnit = await _settingsService.getDistanceUnit();
+    final colorBlindMode = await _settingsService.getColorBlindMode();
     
     setState(() {
       _showSamples = showSamples;
@@ -170,6 +199,8 @@ class _MapScreenState extends State<MapScreen> {
       _ignoredRepeaterPrefix = ignoredPrefix;
       _includeOnlyRepeaters = includeOnly;
       _filterEdgesByWhitelist = filterEdges;
+      _distanceUnit = distanceUnit;
+      _colorBlindMode = colorBlindMode;
     });
     
     // Apply to services
@@ -474,6 +505,85 @@ class _MapScreenState extends State<MapScreen> {
     _mapController.rotate(0); // 0 degrees = north up
     _showSnackBar('Map reset to north');
   }
+  
+  Future<void> _captureScreenshot() async {
+    try {
+      // Hide UI elements
+      setState(() {
+        _hideUIForScreenshot = true;
+      });
+      
+      // Wait for UI to update
+      await Future.delayed(const Duration(milliseconds: 300));
+      
+      // Capture screenshot
+      final Uint8List? imageBytes = await _screenshotController.capture(
+        pixelRatio: 2.0, // Higher quality
+      );
+      
+      // Restore UI
+      setState(() {
+        _hideUIForScreenshot = false;
+      });
+      
+      if (imageBytes == null) {
+        _showSnackBar('Failed to capture screenshot');
+        return;
+      }
+      
+      // Save to gallery
+      final String fileName = 'meshcore_wardrive_${DateTime.now().millisecondsSinceEpoch}.png';
+      final result = await SaverGallery.saveImage(
+        imageBytes,
+        quality: 100,
+        fileName: fileName,
+        androidRelativePath: "Pictures/MeshCore",
+        skipIfExists: false,
+      );
+      
+      if (result.isSuccess) {
+        _showSnackBar('Screenshot saved to gallery!');
+        
+        // Ask if user wants to share
+        if (!mounted) return;
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Screenshot Saved'),
+            content: const Text('Would you like to share the screenshot?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('No'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  // Save temp file and share
+                  final tempDir = await getTemporaryDirectory();
+                  final file = File('${tempDir.path}/meshcore_screenshot.png');
+                  await file.writeAsBytes(imageBytes);
+                  await Share.shareXFiles(
+                    [XFile(file.path)],
+                    text: 'MeshCore Wardrive Coverage Map',
+                  );
+                },
+                child: const Text('Yes'),
+              ),
+            ],
+          ),
+        );
+      } else {
+        _showSnackBar('Failed to save screenshot');
+      }
+    } catch (e) {
+      // Restore UI on error
+      setState(() {
+        _hideUIForScreenshot = false;
+      });
+      _showSnackBar('Error capturing screenshot: $e');
+    }
+  }
 
   @override
   void dispose() {
@@ -482,6 +592,7 @@ class _MapScreenState extends State<MapScreen> {
     _positionSubscription?.cancel();
     _sampleSavedSubscription?.cancel();
     _pingEventSubscription?.cancel();
+    _distanceSubscription?.cancel();
     _locationService.dispose();
     super.dispose();
   }
@@ -504,18 +615,26 @@ class _MapScreenState extends State<MapScreen> {
             tooltip: 'Debug Terminal',
           ),
           IconButton(
+            icon: const Icon(Icons.camera_alt),
+            onPressed: _captureScreenshot,
+            tooltip: 'Screenshot',
+          ),
+          IconButton(
             icon: const Icon(Icons.settings),
             onPressed: _showSettings,
           ),
         ],
       ),
-      body: Stack(
-        children: [
-          _buildMap(),
-          _buildControlPanel(),
-        ],
+      body: Screenshot(
+        controller: _screenshotController,
+        child: Stack(
+          children: [
+            _buildMap(),
+            if (!_hideUIForScreenshot) _buildControlPanel(),
+          ],
+        ),
       ),
-      floatingActionButton: Column(
+      floatingActionButton: _hideUIForScreenshot ? null : Column(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           FloatingActionButton(
@@ -587,7 +706,7 @@ class _MapScreenState extends State<MapScreen> {
         if (_showSamples) _buildSampleLayer(),
         if (_showEdges) _buildEdgeLayer(),
         if (_showRepeaters) _buildRepeaterLayer(),
-        if (_currentPosition != null) _buildCurrentLocationLayer(),
+        if (_currentPosition != null && !_hideUIForScreenshot) _buildCurrentLocationLayer(),
       ],
     );
   }
@@ -600,7 +719,7 @@ class _MapScreenState extends State<MapScreen> {
     
     for (final coverage in _aggregationResult!.coverages) {
       final gh = geohash.GeoHash.decode(coverage.id);
-      final color = Color(AggregationService.getCoverageColor(coverage, _colorMode));
+      final color = Color(AggregationService.getCoverageColor(coverage, _colorMode, colorBlindMode: _colorBlindMode));
       final opacity = AggregationService.getCoverageOpacity(coverage);
       
       // Get corners from geohash bounds
@@ -676,14 +795,14 @@ class _MapScreenState extends State<MapScreen> {
     filteredSamples.sort((a, b) => a.timestamp.compareTo(b.timestamp));
     
     final markers = filteredSamples.map((sample) {
-      // Determine color based on ping result
+      // Determine color based on ping result and color blind mode
       Color markerColor;
       if (sample.pingSuccess == true) {
-        markerColor = Colors.green; // Successful ping
+        markerColor = ColorBlindPalette.getSuccessColor(_colorBlindMode);
       } else if (sample.pingSuccess == false) {
-        markerColor = Colors.red; // Failed ping
+        markerColor = ColorBlindPalette.getFailureColor(_colorBlindMode);
       } else {
-        markerColor = Colors.blue; // GPS-only sample
+        markerColor = ColorBlindPalette.getGpsOnlyColor(_colorBlindMode);
       }
       
       return Marker(
@@ -746,9 +865,9 @@ class _MapScreenState extends State<MapScreen> {
         height: 30,
         child: GestureDetector(
           onTap: () => _showRepeaterInfo(repeater),
-          child: const Icon(
+          child: Icon(
             Icons.cell_tower,
-            color: Colors.purple,
+            color: ColorBlindPalette.getRepeaterColor(_colorBlindMode),
             size: 30,
           ),
         ),
@@ -852,9 +971,20 @@ class _MapScreenState extends State<MapScreen> {
               const Text('•', style: TextStyle(color: Colors.grey)),
               const SizedBox(width: 12),
               // Stats
-              Text(
-                'Samples: $_sampleCount',
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Samples: $_sampleCount',
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                  if (_isTracking)
+                    Text(
+                      '${_totalDistance.toStringAsFixed(2)} ${_distanceUnit == 'miles' ? 'mi' : 'km'}',
+                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                    ),
+                ],
               ),
               const Spacer(),
               // Connect button or Manual Ping
@@ -1480,6 +1610,46 @@ class _MapScreenState extends State<MapScreen> {
                     _colorMode = value!;
                   });
                   await _settingsService.setColorMode(value!);
+                },
+              ),
+            ),
+            ListTile(
+              title: const Text('Distance Unit'),
+              trailing: DropdownButton<String>(
+                value: _distanceUnit,
+                items: const [
+                  DropdownMenuItem(value: 'miles', child: Text('Miles')),
+                  DropdownMenuItem(value: 'km', child: Text('Kilometers')),
+                ],
+                onChanged: (value) async {
+                  setState(() {
+                    _distanceUnit = value!;
+                    // Update displayed distance immediately
+                    _totalDistance = value == 'miles' 
+                        ? _locationService.totalDistanceMiles 
+                        : _locationService.totalDistanceKm;
+                  });
+                  setModalState(() {});
+                  await _settingsService.setDistanceUnit(value!);
+                },
+              ),
+            ),
+            ListTile(
+              title: const Text('Color Blind Mode'),
+              trailing: DropdownButton<String>(
+                value: _colorBlindMode,
+                items: const [
+                  DropdownMenuItem(value: 'normal', child: Text('Normal')),
+                  DropdownMenuItem(value: 'deuteranopia', child: Text('Deuteranopia')),
+                  DropdownMenuItem(value: 'protanopia', child: Text('Protanopia')),
+                  DropdownMenuItem(value: 'tritanopia', child: Text('Tritanopia')),
+                ],
+                onChanged: (value) async {
+                  setState(() {
+                    _colorBlindMode = value!;
+                  });
+                  setModalState(() {});
+                  await _settingsService.setColorBlindMode(value!);
                 },
               ),
             ),

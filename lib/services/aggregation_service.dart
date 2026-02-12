@@ -1,5 +1,7 @@
+import 'dart:ui';
 import '../models/models.dart';
 import '../utils/geohash_utils.dart';
+import '../utils/color_blind_palette.dart';
 
 class AggregationService {
   /// Build indexes from samples and repeaters
@@ -168,16 +170,19 @@ class AggregationService {
   }
 
   /// Get coverage color based on received count
-  static int getCoverageColor(Coverage coverage, String colorMode) {
+  static int getCoverageColor(Coverage coverage, String colorMode, {String colorBlindMode = 'normal'}) {
     if (colorMode == 'age') {
       if (coverage.lastReceived == null) return 0xFF808080;
       
       final age = GeohashUtils.ageInDays(coverage.lastReceived!);
-      if (age < 1) return 0xFF00FF00; // Green - fresh
-      if (age < 7) return 0xFF88FF00; // Yellow-green
-      if (age < 30) return 0xFFFFFF00; // Yellow
-      if (age < 90) return 0xFFFF8800; // Orange
-      return 0xFFFF0000; // Red - old
+      final gradientColors = ColorBlindPalette.getAgeGradient(colorBlindMode);
+      
+      // Interpolate through gradient based on age
+      if (age < 1) return gradientColors[0].value; // Recent
+      if (age < 7) return Color.lerp(gradientColors[0], gradientColors[1], 0.5)!.value;
+      if (age < 30) return gradientColors[1].value; // Medium
+      if (age < 90) return Color.lerp(gradientColors[1], gradientColors[2], 0.5)!.value;
+      return gradientColors[2].value; // Old
     } else {
       // Default: coverage based on ping success rate
       final received = coverage.received; // Successful pings
@@ -192,18 +197,8 @@ class AggregationService {
       // Calculate success rate
       final successRate = received / total;
       
-      // Color based on success rate thresholds
-      if (successRate >= 0.80) {
-        return 0xFF00FF00; // Bright green - very reliable (80%+)
-      } else if (successRate >= 0.50) {
-        return 0xFF88FF00; // Yellow-green - usually works (50-80%)
-      } else if (successRate >= 0.30) {
-        return 0xFFFFFF00; // Yellow - spotty (30-50%)
-      } else if (successRate >= 0.10) {
-        return 0xFFFFAA00; // Orange - rarely works (10-30%)
-      } else {
-        return 0xFFFF0000; // Red - dead zone (<10%)
-      }
+      // Use color blind palette for quality-based coloring
+      return ColorBlindPalette.getQualityColor(colorBlindMode, successRate).value;
     }
   }
 

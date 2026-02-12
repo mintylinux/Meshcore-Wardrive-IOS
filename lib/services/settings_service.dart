@@ -12,6 +12,8 @@ class SettingsService {
   static const String _ignoredRepeaterPrefixKey = 'ignored_repeater_prefix';
   static const String _includeOnlyRepeatersKey = 'include_only_repeaters';
   static const String _filterEdgesByWhitelistKey = 'filter_edges_by_whitelist';
+  static const String _distanceUnitKey = 'distance_unit';
+  static const String _colorBlindModeKey = 'color_blind_mode';
   
   Future<bool> getShowSamples() async {
     final prefs = await SharedPreferences.getInstance();
@@ -132,5 +134,27 @@ class SettingsService {
   Future<void> setFilterEdgesByWhitelist(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_filterEdgesByWhitelistKey, value);
+  }
+  
+  /// Get distance unit ('miles' or 'km')
+  Future<String> getDistanceUnit() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_distanceUnitKey) ?? 'miles';
+  }
+  
+  Future<void> setDistanceUnit(String value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_distanceUnitKey, value);
+  }
+  
+  /// Get color blind mode ('normal', 'deuteranopia', 'protanopia', 'tritanopia')
+  Future<String> getColorBlindMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_colorBlindModeKey) ?? 'normal';
+  }
+  
+  Future<void> setColorBlindMode(String value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_colorBlindModeKey, value);
   }
 }
