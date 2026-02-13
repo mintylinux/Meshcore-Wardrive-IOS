@@ -16,7 +16,6 @@ import '../services/settings_service.dart';
 import '../utils/geohash_utils.dart';
 import '../utils/color_blind_palette.dart';
 import 'package:geohash_plus/geohash_plus.dart' as geohash;
-import 'package:usb_serial/usb_serial.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
@@ -1086,92 +1085,8 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _showConnectionDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Connect LoRa Device'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('Choose connection method:', 
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.pop(context);
-                _connectUsb();
-              },
-              icon: const Icon(Icons.usb),
-              label: const Text('Scan USB Devices'),
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 40),
-              ),
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.pop(context);
-                _connectBluetooth();
-              },
-              icon: const Icon(Icons.bluetooth),
-              label: const Text('Scan Bluetooth'),
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 40),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _connectUsb() async {
-    try {
-      final devices = await _locationService.loraCompanion.scanUsbDevices();
-      
-      if (!mounted) return;
-      
-      if (devices.isEmpty) {
-        _showSnackBar('No USB devices found');
-        return;
-      }
-
-      final selected = await showDialog<UsbDevice>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Select USB Device'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: devices.map((device) {
-              return ListTile(
-                title: Text(device.productName ?? 'USB Device'),
-                subtitle: Text('VID: ${device.vid}, PID: ${device.pid}'),
-                onTap: () => Navigator.pop(context, device),
-              );
-            }).toList(),
-          ),
-        ),
-      );
-
-      if (selected != null) {
-        final connected = await _locationService.loraCompanion.connectUsb(selected);
-        if (connected) {
-          _showSnackBar('Connected via USB');
-          await _loadSamples();
-        } else {
-          _showSnackBar('Failed to connect USB device');
-        }
-      }
-    } catch (e) {
-      _showSnackBar('USB error: $e');
-    }
+    // iOS version: Directly scan for Bluetooth devices
+    _connectBluetooth();
   }
 
   Future<void> _connectBluetooth() async {

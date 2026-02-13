@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.26+26
+version: 1.0.27+27
 
 environment:
   sdk: ^3.10.0
@@ -65,8 +65,7 @@ dependencies:
   # Crypto library
   pointycastle: ^3.9.1
   
-  # USB Serial for LoRa Companion
-  usb_serial: ^0.5.2
+  # Bluetooth for LoRa Companion (iOS compatible)
   flutter_blue_plus: ^1.32.12
   
   # File picker for export

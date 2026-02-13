@@ -4,14 +4,13 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:pointycastle/export.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:usb_serial/usb_serial.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:latlong2/latlong.dart';
 import 'debug_log_service.dart';
 import 'meshcore_protocol.dart';
 import '../models/models.dart';
 
-enum ConnectionType { usb, bluetooth, none }
+enum ConnectionType { bluetooth, none }
 enum PingStatus { success, failed, timeout, pending }
 
 class PingResult {
@@ -53,7 +52,6 @@ class LoRaCompanionService {
   BluetoothDevice? _bluetoothDevice;
   BluetoothCharacteristic? _txCharacteristic;
   BluetoothCharacteristic? _rxCharacteristic;
-  UsbPort? _usbPort;
   StreamSubscription? _deviceSubscription;
   String? _deviceName; // Connected device's advertised name
   
@@ -144,11 +142,12 @@ class LoRaCompanionService {
 
       final subscription = FlutterBluePlus.scanResults.listen((results) {
         for (ScanResult r in results) {
-          // Look for LoRa/Meshtastic devices
+          // Look for LoRa/Meshtastic/WhisperOS devices
           final name = r.device.platformName.toLowerCase();
           if (name.contains('lora') ||
               name.contains('meshtastic') ||
               name.contains('meshcore') ||
+              name.contains('whisper') ||
               name.contains('t-beam') ||
               name.contains('heltec')) {
             if (!devices.contains(r.device)) {
@@ -267,66 +266,6 @@ class LoRaCompanionService {
       return false;
     } catch (e) {
       print('Bluetooth connection error: $e');
-      return false;
-    }
-  }
-
-  // ============================================================================
-  // DEVICE CONNECTION - USB
-  // ============================================================================
-
-  /// Scan for USB LoRa devices
-  Future<List<UsbDevice>> scanUsbDevices() async {
-    try {
-      return await UsbSerial.listDevices();
-    } catch (e) {
-      print('Error scanning USB: $e');
-      return [];
-    }
-  }
-
-  /// Connect to LoRa device via USB
-  Future<bool> connectUsb(UsbDevice device) async {
-    try {
-      _usbPort = await device.create();
-      if (_usbPort == null) return false;
-
-      bool opened = await _usbPort!.open();
-      if (!opened) return false;
-
-      await _usbPort!.setDTR(true);
-      await _usbPort!.setRTS(true);
-      await _usbPort!.setPortParameters(
-        115200, // Standard baud rate for Meshtastic
-        UsbPort.DATABITS_8,
-        UsbPort.STOPBITS_1,
-        UsbPort.PARITY_NONE,
-      );
-
-      _deviceSubscription = _usbPort!.inputStream?.listen((data) {
-        _handleDeviceData(Uint8List.fromList(data));
-      });
-
-      _connectionType = ConnectionType.usb;
-      print('Connected to LoRa device via USB');
-      
-      // Ensure USB mode in protocol parser (wrapped frames with '>')
-      _protocol.setBLEMode(false);
-      _debugLog.logInfo('Protocol set to USB mode (wrapped frames)');
-      
-      // Send handshake
-      await Future.delayed(const Duration(milliseconds: 500));
-      final handshake = _createCommandForDevice(CMD_APP_START);
-      await _sendBinaryToDevice(handshake);
-      _debugLog.logInfo('Sent handshake');
-
-      // Load full contact list so repeaters appear on the map
-      await Future.delayed(const Duration(milliseconds: 150));
-      await _requestAllContacts();
-      
-      return true;
-    } catch (e) {
-      print('USB connection error: $e');
       return false;
     }
   }
@@ -1098,7 +1037,7 @@ class LoRaCompanionService {
     }
   }
 
-  /// Send binary frame to device (handles BLE vs USB frame formats)
+  /// Send binary frame to device (Bluetooth only for iOS)
   Future<void> _sendBinaryToDevice(Uint8List data) async {
     try {
       _debugLog.logLoRa('📤 TX: ${data.length} bytes - ${data.map((b) => b.toRadixString(16).padLeft(2, '0')).take(20).join(' ')}${data.length > 20 ? '...' : ''}');
@@ -1107,10 +1046,6 @@ class LoRaCompanionService {
         // BLE: Send the raw frame data without wrapper
         await _txCharacteristic!.write(data.toList());
         _debugLog.logLoRa('✅ BLE write complete');
-      } else if (_connectionType == ConnectionType.usb && _usbPort != null) {
-        // USB: Data should already have '< + length' wrapper
-        await _usbPort!.write(data);
-        _debugLog.logLoRa('✅ USB write complete');
       }
     } catch (e) {
       _debugLog.logError('Send error: $e');
@@ -1248,14 +1183,11 @@ class LoRaCompanionService {
       
       if (_connectionType == ConnectionType.bluetooth && _bluetoothDevice != null) {
         await _bluetoothDevice!.disconnect();
-      } else if (_connectionType == ConnectionType.usb && _usbPort != null) {
-        await _usbPort!.close();
       }
 
       _bluetoothDevice = null;
       _txCharacteristic = null;
       _rxCharacteristic = null;
-      _usbPort = null;
       _connectionType = ConnectionType.none;
       _deviceName = null;
       _connectionStateSubscription = null;
@@ -1265,6 +1197,7 @@ class LoRaCompanionService {
     }
   }
 
+  Future<void> disconnectMqtt() async {
   Future<void> disconnectMqtt() async {
     // MQTT removed - no-op
   }
