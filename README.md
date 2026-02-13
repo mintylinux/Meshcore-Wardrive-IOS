@@ -1,15 +1,15 @@
-# MeshCore Wardrive Android App - Source Code
+# MeshCore Wardrive iOS App
 
-A Flutter-based Android application for mapping MeshCore mesh network coverage in real-time.
+A Flutter-based iOS application for mapping MeshCore mesh network coverage in real-time.
 
-## 📥 Download Pre-built APK
+⚠️ **iOS Version**: This version only supports Bluetooth connectivity (no USB support due to iOS limitations).
 
-**Latest Release:** [Download from Releases Repository](https://github.com/mintylinux/Meshcore-Wardrive-Android)
+🤖 **Looking for Android?** The full-featured Android version with USB support is available at [Meshcore-Wardrive-Android](https://github.com/mintylinux/Meshcore-Wardrive-Android)
 
 ## 🚀 Features
 
 - Real-time GPS tracking with foreground service
-- USB and Bluetooth connectivity for MeshCore companion radios
+- **Bluetooth connectivity** for MeshCore companion radios (iOS compatible)
 - Auto-ping functionality with configurable intervals (50m, 200m, 0.5 miles, 1 mile)
 - Manual ping testing
 - Success rate based coverage visualization with color coding
@@ -25,16 +25,17 @@ A Flutter-based Android application for mapping MeshCore mesh network coverage i
 ### Prerequisites
 
 - Flutter SDK (3.10.0 or higher)
-- Android Studio or VS Code with Flutter extensions
-- Android SDK with API level 21+
-- A MeshCore companion radio device (for testing)
+- Xcode (for iOS development)
+- macOS with iOS development environment configured
+- iOS device or simulator
+- A MeshCore companion radio device with Bluetooth (for testing)
 
 ### Installation
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/mintylinux/Meshcore-Wardrive-Android-Source.git
-cd meshcore_wardrive
+git clone https://github.com/mintylinux/Meshcore_Wardrive_IOS.git
+cd meshcore_wardrive_ios
 ```
 
 2. Install dependencies:
@@ -52,13 +53,18 @@ flutter pub run flutter_launcher_icons
 flutter run
 ```
 
-### Building Release APK
+### Building for iOS
 
 ```bash
-flutter build apk --release
-```
+# Debug build
+flutter build ios --debug
 
-The APK will be located at: `build/app/outputs/flutter-apk/app-release.apk`
+# Release build
+flutter build ios --release
+
+# Open in Xcode
+open ios/Runner.xcworkspace
+```
 
 ## 📁 Project Structure
 
@@ -123,19 +129,20 @@ Key packages:
 - `flutter_map` - Map display
 - `geolocator` - GPS tracking
 - `flutter_foreground_task` - Background service
-- `usb_serial` - USB connectivity
-- `flutter_blue_plus` - Bluetooth connectivity
+- `flutter_blue_plus` - Bluetooth connectivity (iOS compatible)
 - `sqflite` - Local database
 - `geohash_plus` - Geohash encoding
 - `pointycastle` - Encryption
 
 See [pubspec.yaml](pubspec.yaml) for complete list.
 
-## 🐛 Known Issues
+## 🐛 Known Issues & iOS Limitations
 
-- Some Android devices may require "Location Always" permission for background tracking
-- USB connectivity requires OTG cable and data-capable cable
-- #meshwar channel must be joined in MeshCore app before first use
+- **No USB support** - iOS does not allow USB serial connections to external devices
+- **Bluetooth only** - Only Bluetooth connection to LoRa companion devices is supported
+- iOS may limit background location tracking based on system power management
+- Location permission: "Always Allow" required for background tracking
+- Bluetooth connection may be interrupted by iOS system events
 
 ## 🤝 Contributing
 
@@ -162,6 +169,8 @@ For issues and questions:
 
 ---
 
-**Current Version:** 1.0.7
+**Current Version:** 1.0.27-iOS
 
-**Minimum Android Version:** Android 5.0 (API 21)
+**Platform:** iOS (Bluetooth only)
+
+**See also:** [README_iOS.md](README_iOS.md) for detailed iOS-specific information
