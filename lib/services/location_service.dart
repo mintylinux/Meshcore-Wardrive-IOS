@@ -10,11 +10,13 @@ import '../utils/geohash_utils.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'persistent_debug_logger.dart';
+import 'settings_service.dart';
 
 class LocationService {
   final DatabaseService _dbService = DatabaseService();
   final LoRaCompanionService _loraCompanion = LoRaCompanionService();
   final PersistentDebugLogger _logger = PersistentDebugLogger();
+  final SettingsService _settings = SettingsService();
   StreamSubscription<Position>? _positionStreamSubscription;
   bool _isTracking = false;
   bool _autoPingEnabled = false;
@@ -358,11 +360,13 @@ class LocationService {
   /// Perform ping in background and update sample when complete
   void _performPingInBackground(LatLng latLng, String geohash) async {
     try {
-      await _logger.logPingEvent('Sending ping to LoRa device...');
+      // Get user-configured discovery timeout
+      final timeoutSeconds = await _settings.getDiscoveryTimeout();
+      await _logger.logPingEvent('Sending ping to LoRa device (timeout: ${timeoutSeconds}s)...');
       final pingResult = await _loraCompanion.ping(
         latitude: latLng.latitude,
         longitude: latLng.longitude,
-        timeoutSeconds: 30,
+        timeoutSeconds: timeoutSeconds,
       );
       
       final pingSuccess = pingResult.status == PingStatus.success;

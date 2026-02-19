@@ -649,8 +649,6 @@ class LoRaCompanionService {
   Future<void> _sendToDevice(String data) async {
     if (_connectionType == ConnectionType.bluetooth && _txCharacteristic != null) {
       await _txCharacteristic!.write(utf8.encode(data));
-    } else if (_connectionType == ConnectionType.usb && _usbPort != null) {
-      await _usbPort!.write(Uint8List.fromList(utf8.encode(data)));
     }
   }
 
@@ -1198,10 +1196,8 @@ class LoRaCompanionService {
   }
 
   Future<void> disconnectMqtt() async {
-  Future<void> disconnectMqtt() async {
     // MQTT removed - no-op
   }
-
 
   void dispose() {
     disconnectDevice();

@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.0.28-iOS - 2026-02-19
+
+### Added
+- **Configurable Discovery Timeout**: Users can now adjust ping timeout from 10-30 seconds in 5-second intervals
+  - Default: 20 seconds (changed from hardcoded 30)
+  - Available options: 10s, 15s, 20s, 25s, 30s
+  - Accessible in Settings menu under "Discovery Timeout"
+  - Different network conditions and repeater densities may benefit from different timeout values
+  - User feedback indicated 30s timeout was too long in some scenarios, causing worse results
+  - Shorter timeouts work better in dense repeater areas, longer timeouts help in sparse coverage
+
+### Changed
+- Default discovery timeout changed from 30 seconds to 20 seconds
+- LocationService now dynamically reads timeout setting instead of using hardcoded value
+
+## v1.0.27-iOS - 2026-02-13
+
+### Added
+- **iOS Version**: Initial iOS port of MeshCore Wardrive app
+  - Bluetooth-only connectivity (no USB support due to iOS limitations)
+  - All core features from Android version included
+  - Separate repository from Android version
+
+### Removed
+- USB serial support (iOS does not support USB serial connections)
+- USB connection dialog and related code paths
+
+### Fixed
+- **WhisperOS Support**: Added 'whisper' to Bluetooth device name filter
+  - MeshCore devices running WhisperOS firmware now appear in Bluetooth scan list
+  - Previously only recognized 'lora', 'meshtastic', 'meshcore', 't-beam', 'heltec'
+
 ## v1.0.26 - 2026-02-12
 
 ### Fixed

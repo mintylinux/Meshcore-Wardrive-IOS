@@ -14,6 +14,7 @@ class SettingsService {
   static const String _filterEdgesByWhitelistKey = 'filter_edges_by_whitelist';
   static const String _distanceUnitKey = 'distance_unit';
   static const String _colorBlindModeKey = 'color_blind_mode';
+  static const String _discoveryTimeoutKey = 'discovery_timeout_seconds';
   
   Future<bool> getShowSamples() async {
     final prefs = await SharedPreferences.getInstance();
@@ -156,5 +157,16 @@ class SettingsService {
   Future<void> setColorBlindMode(String value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_colorBlindModeKey, value);
+  }
+  
+  /// Get discovery timeout in seconds (10-30 seconds, default 20)
+  Future<int> getDiscoveryTimeout() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_discoveryTimeoutKey) ?? 20;
+  }
+  
+  Future<void> setDiscoveryTimeout(int value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_discoveryTimeoutKey, value);
   }
 }
