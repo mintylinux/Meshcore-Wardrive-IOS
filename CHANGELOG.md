@@ -1,6 +1,34 @@
 # Changelog
 
-## v1.0.28-iOS - 2026-02-19
+## v1.0.29 - 2026-02-27
+
+### ⚠️ IMPORTANT: Reinstall Required
+The app package name has changed from `com.example.meshcore_wardrive` to `mintylinux.meshcore.wardrive`. Android treats this as a completely different app, so you **must uninstall the old version** before installing v1.0.29.
+
+**Before updating:**
+1. Open the app and go to **Settings → Export Data** to back up your samples
+2. Uninstall the old version
+3. Install v1.0.29
+4. Go to **Settings → Import Data** to restore your samples
+
+### Added
+- **Editable Upload Sites**: Upload endpoint addresses can now be edited (previously only deletable)
+  - Blue edit icon next to each site in Manage Upload Sites
+  - Edit both site name and API URL
+- **Total Distance Driven**: Persistent all-time mileage tracker across all sessions
+  - Displayed in new "Statistics" section in Settings
+  - Supports miles and kilometers based on distance unit setting
+  - Reset button with confirmation dialog
+- **Estimated Fuel Usage**: Rough fuel consumption estimate based on distance driven
+  - Set your vehicle's MPG in Settings to enable
+  - Shows gallons used and estimated cost
+- **Configurable Gas Price**: Set your local gas price per gallon (default $3.50)
+  - Used in fuel cost estimation
+
+### Changed
+- **Package name**: Changed from `com.example.meshcore_wardrive` to `mintylinux.meshcore.wardrive`
+
+## v1.0.28 - 2026-02-19
 
 ### Added
 - **Configurable Discovery Timeout**: Users can now adjust ping timeout from 10-30 seconds in 5-second intervals
@@ -15,22 +43,13 @@
 - Default discovery timeout changed from 30 seconds to 20 seconds
 - LocationService now dynamically reads timeout setting instead of using hardcoded value
 
-## v1.0.27-iOS - 2026-02-13
-
-### Added
-- **iOS Version**: Initial iOS port of MeshCore Wardrive app
-  - Bluetooth-only connectivity (no USB support due to iOS limitations)
-  - All core features from Android version included
-  - Separate repository from Android version
-
-### Removed
-- USB serial support (iOS does not support USB serial connections)
-- USB connection dialog and related code paths
+## v1.0.27 - 2026-02-13
 
 ### Fixed
-- **WhisperOS Support**: Added 'whisper' to Bluetooth device name filter
-  - MeshCore devices running WhisperOS firmware now appear in Bluetooth scan list
-  - Previously only recognized 'lora', 'meshtastic', 'meshcore', 't-beam', 'heltec'
+- **WhisperOS Device Support**: Devices running WhisperOS now appear in Bluetooth scan list
+  - Added 'whisper' to device name filter in Bluetooth scanning
+  - Users with WhisperOS-based MeshCore devices can now connect to the app
+  - Line 152 in lora_companion_service.dart
 
 ## v1.0.26 - 2026-02-12
 

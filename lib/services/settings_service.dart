@@ -15,6 +15,9 @@ class SettingsService {
   static const String _distanceUnitKey = 'distance_unit';
   static const String _colorBlindModeKey = 'color_blind_mode';
   static const String _discoveryTimeoutKey = 'discovery_timeout_seconds';
+  static const String _totalDistanceDrivenKey = 'total_distance_driven_meters';
+  static const String _vehicleMpgKey = 'vehicle_mpg';
+  static const String _gasPriceKey = 'gas_price_per_gallon';
   
   Future<bool> getShowSamples() async {
     final prefs = await SharedPreferences.getInstance();
@@ -168,5 +171,52 @@ class SettingsService {
   Future<void> setDiscoveryTimeout(int value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_discoveryTimeoutKey, value);
+  }
+  
+  /// Get total distance driven across all sessions (in meters)
+  Future<double> getTotalDistanceDriven() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_totalDistanceDrivenKey) ?? 0.0;
+  }
+  
+  /// Add distance from a session to the persistent total
+  Future<void> addToTotalDistanceDriven(double meters) async {
+    final prefs = await SharedPreferences.getInstance();
+    final current = prefs.getDouble(_totalDistanceDrivenKey) ?? 0.0;
+    await prefs.setDouble(_totalDistanceDrivenKey, current + meters);
+  }
+  
+  /// Reset total distance driven
+  Future<void> resetTotalDistanceDriven() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_totalDistanceDrivenKey, 0.0);
+  }
+  
+  /// Get vehicle MPG (miles per gallon), null if not set
+  Future<double?> getVehicleMpg() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_vehicleMpgKey);
+  }
+  
+  /// Set vehicle MPG
+  Future<void> setVehicleMpg(double? value) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (value == null) {
+      await prefs.remove(_vehicleMpgKey);
+    } else {
+      await prefs.setDouble(_vehicleMpgKey, value);
+    }
+  }
+  
+  /// Get gas price per gallon (default 3.50)
+  Future<double> getGasPrice() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getDouble(_gasPriceKey) ?? 3.50;
+  }
+  
+  /// Set gas price per gallon
+  Future<void> setGasPrice(double value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_gasPriceKey, value);
   }
 }

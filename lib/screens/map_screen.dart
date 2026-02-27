@@ -269,6 +269,11 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _toggleTracking() async {
     if (_isTracking) {
+      // Persist session distance before stopping
+      final sessionMeters = _locationService.totalDistanceMeters;
+      if (sessionMeters > 0) {
+        await _settingsService.addToTotalDistanceDriven(sessionMeters);
+      }
       // Stop tracking and auto-ping
       await _locationService.stopTracking();
       _locationService.disableAutoPing();
@@ -1650,6 +1655,179 @@ class _MapScreenState extends State<MapScreen> {
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Text(
+                'Statistics',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ),
+            FutureBuilder<List<double?>>(
+              future: Future.wait([
+                _settingsService.getTotalDistanceDriven(),
+                _settingsService.getVehicleMpg(),
+                _settingsService.getGasPrice(),
+              ]),
+              builder: (context, snapshot) {
+                final totalMeters = snapshot.data?[0] ?? 0.0;
+                final vehicleMpg = snapshot.data?[1];
+                final gasPrice = snapshot.data?[2] ?? 3.50;
+                final sessionMeters = _isTracking ? _locationService.totalDistanceMeters : 0.0;
+                final grandTotalMeters = totalMeters + sessionMeters;
+                final distanceDisplay = _distanceUnit == 'miles'
+                    ? '${(grandTotalMeters / 1609.34).toStringAsFixed(2)} mi'
+                    : '${(grandTotalMeters / 1000.0).toStringAsFixed(2)} km';
+                
+                // Estimate fuel usage
+                String? fuelDisplay;
+                if (vehicleMpg != null && vehicleMpg > 0) {
+                  final totalMiles = grandTotalMeters / 1609.34;
+                  final gallonsUsed = totalMiles / vehicleMpg;
+                  fuelDisplay = '${gallonsUsed.toStringAsFixed(2)} gal (~\$${(gallonsUsed * gasPrice!).toStringAsFixed(2)} @ \$${gasPrice.toStringAsFixed(2)}/gal)';
+                }
+                
+                return Column(
+                  children: [
+                    ListTile(
+                      title: const Text('Total Distance Driven'),
+                      subtitle: Text(distanceDisplay),
+                      leading: const Icon(Icons.straighten),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.restart_alt, size: 20),
+                        tooltip: 'Reset',
+                        onPressed: () async {
+                          final confirmed = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              title: const Text('Reset Distance'),
+                              content: const Text('Reset total distance driven to zero?'),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text('Cancel'),
+                                ),
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text('Reset'),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (confirmed == true) {
+                            await _settingsService.resetTotalDistanceDriven();
+                            setModalState(() {});
+                          }
+                        },
+                      ),
+                    ),
+                    if (fuelDisplay != null)
+                      ListTile(
+                        title: const Text('Estimated Fuel Used'),
+                        subtitle: Text(fuelDisplay),
+                        leading: const Icon(Icons.local_gas_station),
+                      ),
+                    ListTile(
+                      title: const Text('Vehicle Fuel Economy'),
+                      subtitle: Text(vehicleMpg != null
+                          ? '${vehicleMpg.toStringAsFixed(1)} MPG'
+                          : 'Not set'),
+                      leading: const Icon(Icons.directions_car),
+                      trailing: const Icon(Icons.edit, size: 20),
+                      onTap: () async {
+                        final controller = TextEditingController(
+                          text: vehicleMpg?.toStringAsFixed(1) ?? '',
+                        );
+                        final confirmed = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Vehicle Fuel Economy'),
+                            content: TextField(
+                              controller: controller,
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              decoration: const InputDecoration(
+                                labelText: 'Miles Per Gallon (MPG)',
+                                hintText: 'e.g., 25.0',
+                              ),
+                              autofocus: true,
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                child: const Text('Cancel'),
+                              ),
+                              if (vehicleMpg != null)
+                                TextButton(
+                                  onPressed: () async {
+                                    await _settingsService.setVehicleMpg(null);
+                                    Navigator.pop(ctx, true);
+                                  },
+                                  child: const Text('Clear'),
+                                ),
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: const Text('Save'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirmed == true && controller.text.isNotEmpty) {
+                          final mpg = double.tryParse(controller.text);
+                          if (mpg != null && mpg > 0) {
+                            await _settingsService.setVehicleMpg(mpg);
+                          }
+                        }
+                        setModalState(() {});
+                      },
+                    ),
+                    ListTile(
+                      title: const Text('Gas Price'),
+                      subtitle: Text('\$${gasPrice!.toStringAsFixed(2)}/gal'),
+                      leading: const Icon(Icons.attach_money),
+                      trailing: const Icon(Icons.edit, size: 20),
+                      onTap: () async {
+                        final controller = TextEditingController(
+                          text: gasPrice.toStringAsFixed(2),
+                        );
+                        final confirmed = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Gas Price'),
+                            content: TextField(
+                              controller: controller,
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              decoration: const InputDecoration(
+                                labelText: 'Price per Gallon',
+                                hintText: 'e.g., 3.50',
+                                prefixText: '\$ ',
+                              ),
+                              autofocus: true,
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                child: const Text('Cancel'),
+                              ),
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: const Text('Save'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirmed == true && controller.text.isNotEmpty) {
+                          final price = double.tryParse(controller.text);
+                          if (price != null && price > 0) {
+                            await _settingsService.setGasPrice(price);
+                          }
+                        }
+                        setModalState(() {});
+                      },
+                    ),
+                  ],
+                );
+              },
+            ),
+            const Divider(),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
                 'Data Management',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
               ),
@@ -2406,35 +2584,60 @@ class _MapScreenState extends State<MapScreen> {
                             }
                           });
                         },
-                        secondary: IconButton(
-                          icon: const Icon(Icons.delete, size: 20, color: Colors.red),
-                          onPressed: () async {
-                            final confirmed = await showDialog<bool>(
-                              context: context,
-                              builder: (ctx) => AlertDialog(
-                                title: const Text('Delete Site'),
-                                content: Text('Delete "${endpoint.name}"?'),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(ctx, false),
-                                    child: const Text('Cancel'),
+                        secondary: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit, size: 20, color: Colors.blue),
+                              onPressed: () async {
+                                final edited = await _showEditEndpointDialog(endpoint);
+                                if (edited != null) {
+                                  final index = endpoints.indexOf(endpoint);
+                                  if (index != -1) {
+                                    // Update selected names if name changed
+                                    if (selectedNames.contains(endpoint.name)) {
+                                      selectedNames.remove(endpoint.name);
+                                      selectedNames.add(edited.name);
+                                    }
+                                    endpoints[index] = edited;
+                                    await _uploadService.setUploadEndpoints(endpoints);
+                                    await _uploadService.setSelectedEndpoints(selectedNames);
+                                    setModalState(() {});
+                                  }
+                                }
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete, size: 20, color: Colors.red),
+                              onPressed: () async {
+                                final confirmed = await showDialog<bool>(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    title: const Text('Delete Site'),
+                                    content: Text('Delete "${endpoint.name}"?'),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(ctx, false),
+                                        child: const Text('Cancel'),
+                                      ),
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(ctx, true),
+                                        style: TextButton.styleFrom(foregroundColor: Colors.red),
+                                        child: const Text('Delete'),
+                                      ),
+                                    ],
                                   ),
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(ctx, true),
-                                    style: TextButton.styleFrom(foregroundColor: Colors.red),
-                                    child: const Text('Delete'),
-                                  ),
-                                ],
-                              ),
-                            );
-                            if (confirmed == true) {
-                              endpoints.remove(endpoint);
-                              selectedNames.remove(endpoint.name);
-                              await _uploadService.setUploadEndpoints(endpoints);
-                              await _uploadService.setSelectedEndpoints(selectedNames);
-                              setModalState(() {});
-                            }
-                          },
+                                );
+                                if (confirmed == true) {
+                                  endpoints.remove(endpoint);
+                                  selectedNames.remove(endpoint.name);
+                                  await _uploadService.setUploadEndpoints(endpoints);
+                                  await _uploadService.setSelectedEndpoints(selectedNames);
+                                  setModalState(() {});
+                                }
+                              },
+                            ),
+                          ],
                         ),
                       );
                     }).toList(),
@@ -2479,6 +2682,58 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
   
+  Future<UploadEndpoint?> _showEditEndpointDialog(UploadEndpoint existing) async {
+    final nameController = TextEditingController(text: existing.name);
+    final urlController = TextEditingController(text: existing.url);
+    
+    return await showDialog<UploadEndpoint>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Upload Site'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameController,
+              decoration: const InputDecoration(
+                labelText: 'Site Name',
+              ),
+              autofocus: true,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: urlController,
+              decoration: const InputDecoration(
+                labelText: 'API URL',
+              ),
+              keyboardType: TextInputType.url,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (nameController.text.isNotEmpty && urlController.text.isNotEmpty) {
+                Navigator.pop(
+                  context,
+                  UploadEndpoint(
+                    name: nameController.text,
+                    url: urlController.text,
+                  ),
+                );
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<UploadEndpoint?> _showAddEndpointDialog() async {
     final nameController = TextEditingController();
     final urlController = TextEditingController();
