@@ -18,6 +18,7 @@ class SettingsService {
   static const String _totalDistanceDrivenKey = 'total_distance_driven_meters';
   static const String _vehicleMpgKey = 'vehicle_mpg';
   static const String _gasPriceKey = 'gas_price_per_gallon';
+  static const String _fuelUnitKey = 'fuel_unit';
   
   Future<bool> getShowSamples() async {
     final prefs = await SharedPreferences.getInstance();
@@ -218,5 +219,17 @@ class SettingsService {
   Future<void> setGasPrice(double value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_gasPriceKey, value);
+  }
+  
+  /// Get fuel unit ('imperial' or 'metric')
+  Future<String> getFuelUnit() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_fuelUnitKey) ?? 'imperial';
+  }
+  
+  /// Set fuel unit ('imperial' or 'metric')
+  Future<void> setFuelUnit(String value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_fuelUnitKey, value);
   }
 }

@@ -87,6 +87,9 @@ class _MapScreenState extends State<MapScreen> {
   // Discovery timeout (10-30 seconds)
   int _discoveryTimeoutSeconds = 20;
   
+  // Fuel unit ('imperial' for MPG/gal, 'metric' for L/100km/L)
+  String _fuelUnit = 'imperial';
+  
   // Screenshot mode - hide UI elements
   bool _hideUIForScreenshot = false;
   
@@ -189,6 +192,7 @@ class _MapScreenState extends State<MapScreen> {
     final distanceUnit = await _settingsService.getDistanceUnit();
     final colorBlindMode = await _settingsService.getColorBlindMode();
     final discoveryTimeout = await _settingsService.getDiscoveryTimeout();
+    final fuelUnit = await _settingsService.getFuelUnit();
     
     setState(() {
       _showSamples = showSamples;
@@ -205,6 +209,7 @@ class _MapScreenState extends State<MapScreen> {
       _distanceUnit = distanceUnit;
       _colorBlindMode = colorBlindMode;
       _discoveryTimeoutSeconds = discoveryTimeout;
+      _fuelUnit = fuelUnit;
     });
     
     // Apply to services
@@ -1560,6 +1565,23 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
             ListTile(
+              title: const Text('Fuel Unit'),
+              trailing: DropdownButton<String>(
+                value: _fuelUnit,
+                items: const [
+                  DropdownMenuItem(value: 'imperial', child: Text('MPG / Gallons')),
+                  DropdownMenuItem(value: 'metric', child: Text('L/100km / Litres')),
+                ],
+                onChanged: (value) async {
+                  setState(() {
+                    _fuelUnit = value!;
+                  });
+                  setModalState(() {});
+                  await _settingsService.setFuelUnit(value!);
+                },
+              ),
+            ),
+            ListTile(
               title: const Text('Color Blind Mode'),
               trailing: DropdownButton<String>(
                 value: _colorBlindMode,
@@ -1680,7 +1702,13 @@ class _MapScreenState extends State<MapScreen> {
                 if (vehicleMpg != null && vehicleMpg > 0) {
                   final totalMiles = grandTotalMeters / 1609.34;
                   final gallonsUsed = totalMiles / vehicleMpg;
-                  fuelDisplay = '${gallonsUsed.toStringAsFixed(2)} gal (~\$${(gallonsUsed * gasPrice!).toStringAsFixed(2)} @ \$${gasPrice.toStringAsFixed(2)}/gal)';
+                  if (_fuelUnit == 'metric') {
+                    final litresUsed = gallonsUsed * 3.78541;
+                    final pricePerLitre = gasPrice! / 3.78541;
+                    fuelDisplay = '${litresUsed.toStringAsFixed(2)} L (~\$${(litresUsed * pricePerLitre).toStringAsFixed(2)} @ \$${pricePerLitre.toStringAsFixed(2)}/L)';
+                  } else {
+                    fuelDisplay = '${gallonsUsed.toStringAsFixed(2)} gal (~\$${(gallonsUsed * gasPrice!).toStringAsFixed(2)} @ \$${gasPrice.toStringAsFixed(2)}/gal)';
+                  }
                 }
                 
                 return Column(
@@ -1726,13 +1754,19 @@ class _MapScreenState extends State<MapScreen> {
                     ListTile(
                       title: const Text('Vehicle Fuel Economy'),
                       subtitle: Text(vehicleMpg != null
-                          ? '${vehicleMpg.toStringAsFixed(1)} MPG'
+                          ? (_fuelUnit == 'metric'
+                              ? '${(235.215 / vehicleMpg).toStringAsFixed(1)} L/100km'
+                              : '${vehicleMpg.toStringAsFixed(1)} MPG')
                           : 'Not set'),
                       leading: const Icon(Icons.directions_car),
                       trailing: const Icon(Icons.edit, size: 20),
                       onTap: () async {
+                        final isMetric = _fuelUnit == 'metric';
+                        final displayValue = vehicleMpg != null && isMetric
+                            ? (235.215 / vehicleMpg).toStringAsFixed(1)
+                            : vehicleMpg?.toStringAsFixed(1) ?? '';
                         final controller = TextEditingController(
-                          text: vehicleMpg?.toStringAsFixed(1) ?? '',
+                          text: displayValue,
                         );
                         final confirmed = await showDialog<bool>(
                           context: context,
@@ -1741,9 +1775,9 @@ class _MapScreenState extends State<MapScreen> {
                             content: TextField(
                               controller: controller,
                               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                              decoration: const InputDecoration(
-                                labelText: 'Miles Per Gallon (MPG)',
-                                hintText: 'e.g., 25.0',
+                              decoration: InputDecoration(
+                                labelText: isMetric ? 'Litres per 100km (L/100km)' : 'Miles Per Gallon (MPG)',
+                                hintText: isMetric ? 'e.g., 9.4' : 'e.g., 25.0',
                               ),
                               autofocus: true,
                             ),
@@ -1768,33 +1802,41 @@ class _MapScreenState extends State<MapScreen> {
                           ),
                         );
                         if (confirmed == true && controller.text.isNotEmpty) {
-                          final mpg = double.tryParse(controller.text);
-                          if (mpg != null && mpg > 0) {
-                            await _settingsService.setVehicleMpg(mpg);
+                          final inputValue = double.tryParse(controller.text);
+                          if (inputValue != null && inputValue > 0) {
+                            // Convert L/100km to MPG for internal storage
+                            final mpgToStore = isMetric ? 235.215 / inputValue : inputValue;
+                            await _settingsService.setVehicleMpg(mpgToStore);
                           }
                         }
                         setModalState(() {});
                       },
                     ),
                     ListTile(
-                      title: const Text('Gas Price'),
-                      subtitle: Text('\$${gasPrice!.toStringAsFixed(2)}/gal'),
+                      title: Text(_fuelUnit == 'metric' ? 'Fuel Price' : 'Gas Price'),
+                      subtitle: Text(_fuelUnit == 'metric'
+                          ? '\$${(gasPrice! / 3.78541).toStringAsFixed(2)}/L'
+                          : '\$${gasPrice!.toStringAsFixed(2)}/gal'),
                       leading: const Icon(Icons.attach_money),
                       trailing: const Icon(Icons.edit, size: 20),
                       onTap: () async {
+                        final isMetric = _fuelUnit == 'metric';
+                        final displayPrice = isMetric
+                            ? (gasPrice! / 3.78541).toStringAsFixed(2)
+                            : gasPrice!.toStringAsFixed(2);
                         final controller = TextEditingController(
-                          text: gasPrice.toStringAsFixed(2),
+                          text: displayPrice,
                         );
                         final confirmed = await showDialog<bool>(
                           context: context,
                           builder: (ctx) => AlertDialog(
-                            title: const Text('Gas Price'),
+                            title: Text(isMetric ? 'Fuel Price' : 'Gas Price'),
                             content: TextField(
                               controller: controller,
                               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                              decoration: const InputDecoration(
-                                labelText: 'Price per Gallon',
-                                hintText: 'e.g., 3.50',
+                              decoration: InputDecoration(
+                                labelText: isMetric ? 'Price per Litre' : 'Price per Gallon',
+                                hintText: isMetric ? 'e.g., 1.85' : 'e.g., 3.50',
                                 prefixText: '\$ ',
                               ),
                               autofocus: true,
@@ -1812,9 +1854,11 @@ class _MapScreenState extends State<MapScreen> {
                           ),
                         );
                         if (confirmed == true && controller.text.isNotEmpty) {
-                          final price = double.tryParse(controller.text);
-                          if (price != null && price > 0) {
-                            await _settingsService.setGasPrice(price);
+                          final inputPrice = double.tryParse(controller.text);
+                          if (inputPrice != null && inputPrice > 0) {
+                            // Convert $/L to $/gal for internal storage
+                            final priceToStore = isMetric ? inputPrice * 3.78541 : inputPrice;
+                            await _settingsService.setGasPrice(priceToStore);
                           }
                         }
                         setModalState(() {});

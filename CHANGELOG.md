@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.0.29.1 - 2026-02-27
+
+### Added
+- **Metric Fuel Units**: Support for L/100km and litres in fuel tracking
+  - New "Fuel Unit" dropdown in Settings: MPG/Gallons or L/100km/Litres
+  - Vehicle fuel economy displays and accepts L/100km when metric is selected
+  - Fuel price displays and accepts $/litre when metric is selected
+  - Estimated fuel usage shows litres instead of gallons
+  - Internal storage remains in imperial for seamless unit switching
+
 ## v1.0.29 - 2026-02-27
 
 ### ⚠️ IMPORTANT: Reinstall Required
