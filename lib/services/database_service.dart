@@ -7,10 +7,11 @@ import 'dart:io';
 class DatabaseService {
   static Database? _database;
   static const String _databaseName = 'meshcore_wardrive.db';
-  static const int _databaseVersion = 5;
+  static const int _databaseVersion = 7;
 
   static const String tableSamples = 'samples';
   static const String tableUploads = 'uploads';
+  static const String tableSessions = 'sessions';
 
   Future<Database> get database async {
     if (_database != null) return _database!;
@@ -43,7 +44,8 @@ class DatabaseService {
         snr INTEGER,
         pingSuccess INTEGER,
         observerNames TEXT,
-        uploaded INTEGER DEFAULT 0
+        uploaded INTEGER DEFAULT 0,
+        response_time_ms INTEGER
       )
     ''');
 
@@ -70,6 +72,20 @@ class DatabaseService {
     // Create index on endpoint_url for faster queries
     await db.execute('''
       CREATE INDEX idx_uploads_endpoint ON $tableUploads (endpoint_url)
+    ''');
+    
+    // Create sessions table
+    await db.execute('''
+      CREATE TABLE $tableSessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        start_time INTEGER NOT NULL,
+        end_time INTEGER,
+        distance_meters REAL DEFAULT 0,
+        sample_count INTEGER DEFAULT 0,
+        ping_count INTEGER DEFAULT 0,
+        success_count INTEGER DEFAULT 0,
+        notes TEXT
+      )
     ''');
   }
 
@@ -109,6 +125,23 @@ class DatabaseService {
         SELECT id, 'https://meshwar-map.pages.dev/api/samples', ?
         FROM $tableSamples WHERE uploaded = 1
       ''', [DateTime.now().millisecondsSinceEpoch]);
+    }
+    if (oldVersion < 6) {
+      await db.execute('''
+        CREATE TABLE $tableSessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          start_time INTEGER NOT NULL,
+          end_time INTEGER,
+          distance_meters REAL DEFAULT 0,
+          sample_count INTEGER DEFAULT 0,
+          ping_count INTEGER DEFAULT 0,
+          success_count INTEGER DEFAULT 0,
+          notes TEXT
+        )
+      ''');
+    }
+    if (oldVersion < 7) {
+      await db.execute('ALTER TABLE $tableSamples ADD COLUMN response_time_ms INTEGER');
     }
   }
 
@@ -317,6 +350,65 @@ class DatabaseService {
     }
     
     return importedCount;
+  }
+
+  /// Create a new session, returns the session ID
+  Future<int> createSession(WSession session) async {
+    final db = await database;
+    return await db.insert(tableSessions, session.toMap());
+  }
+  
+  /// Update an existing session
+  Future<void> updateSession(WSession session) async {
+    final db = await database;
+    await db.update(
+      tableSessions,
+      session.toMap(),
+      where: 'id = ?',
+      whereArgs: [session.id],
+    );
+  }
+  
+  /// Get all sessions, newest first
+  Future<List<WSession>> getAllSessions() async {
+    final db = await database;
+    final maps = await db.query(
+      tableSessions,
+      orderBy: 'start_time DESC',
+    );
+    return maps.map((m) => WSession.fromMap(m)).toList();
+  }
+  
+  /// Delete a session by ID
+  Future<void> deleteSession(int id) async {
+    final db = await database;
+    await db.delete(tableSessions, where: 'id = ?', whereArgs: [id]);
+  }
+  
+  /// Get sample counts for a session's time range
+  Future<Map<String, int>> getSessionSampleCounts(DateTime start, DateTime end) async {
+    final db = await database;
+    final startMs = start.millisecondsSinceEpoch;
+    final endMs = end.millisecondsSinceEpoch;
+    
+    final totalResult = await db.rawQuery(
+      'SELECT COUNT(*) FROM $tableSamples WHERE timestamp >= ? AND timestamp <= ?',
+      [startMs, endMs],
+    );
+    final pingResult = await db.rawQuery(
+      'SELECT COUNT(*) FROM $tableSamples WHERE timestamp >= ? AND timestamp <= ? AND pingSuccess IS NOT NULL',
+      [startMs, endMs],
+    );
+    final successResult = await db.rawQuery(
+      'SELECT COUNT(*) FROM $tableSamples WHERE timestamp >= ? AND timestamp <= ? AND pingSuccess = 1',
+      [startMs, endMs],
+    );
+    
+    return {
+      'total': Sqflite.firstIntValue(totalResult) ?? 0,
+      'pings': Sqflite.firstIntValue(pingResult) ?? 0,
+      'successes': Sqflite.firstIntValue(successResult) ?? 0,
+    };
   }
 
   /// Close the database

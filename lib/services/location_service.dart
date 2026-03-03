@@ -27,6 +27,10 @@ class LocationService {
   double _totalDistanceMeters = 0.0;
   LatLng? _lastPosition;
   
+  // Session tracking
+  int? _currentSessionId;
+  DateTime? _sessionStartTime;
+  
   // Stream for broadcasting current position
   final _currentPositionController = StreamController<LatLng>.broadcast();
   Stream<LatLng> get currentPositionStream => _currentPositionController.stream;
@@ -42,6 +46,13 @@ class LocationService {
   // Stream for broadcasting total distance updates
   final _totalDistanceController = StreamController<double>.broadcast();
   Stream<double> get totalDistanceStream => _totalDistanceController.stream;
+  
+  // Stream for broadcasting current speed (m/s)
+  final _speedController = StreamController<double>.broadcast();
+  Stream<double> get speedStream => _speedController.stream;
+  double _currentSpeedMps = 0.0;
+  double get currentSpeedMph => _currentSpeedMps * 2.23694;
+  double get currentSpeedKmh => _currentSpeedMps * 3.6;
 
   /// Check if location permissions are granted
   Future<bool> checkPermissions() async {
@@ -194,6 +205,18 @@ class LocationService {
       _lastPosition = null;
       _totalDistanceController.add(_totalDistanceMeters);
       
+      // Create a new session record
+      _sessionStartTime = DateTime.now();
+      try {
+        final session = WSession(
+          startTime: _sessionStartTime!,
+        );
+        _currentSessionId = await _dbService.createSession(session);
+        await _logger.logServiceEvent('Session created with ID: $_currentSessionId');
+      } catch (e) {
+        await _logger.logError('Session Create', e.toString());
+      }
+      
       await _logger.logServiceEvent('Tracking started successfully');
       return true;
     } catch (e) {
@@ -254,6 +277,10 @@ class LocationService {
   void _handleNewPosition(Position position) async {
     final latLng = LatLng(position.latitude, position.longitude);
     await _logger.logLocationEvent('GPS update: ${latLng.latitude}, ${latLng.longitude}, accuracy: ${position.accuracy}m');
+    
+    // Update speed (filter out invalid negative values)
+    _currentSpeedMps = (position.speed >= 0) ? position.speed : 0.0;
+    _speedController.add(_currentSpeedMps);
     
     // Calculate distance traveled
     if (_lastPosition != null) {
@@ -406,6 +433,7 @@ class LocationService {
         rssi: pingResult.rssi,
         snr: pingResult.snr,
         pingSuccess: pingSuccess,
+        responseTimeMs: pingResult.responseTimeMs,
       );
       
       // Save ping result as new sample
@@ -448,6 +476,29 @@ class LocationService {
     await WakelockPlus.disable();
     await _logger.logPowerEvent('Wakelock disabled');
     print('Wakelock disabled');
+    
+    // Finalize session
+    if (_currentSessionId != null && _sessionStartTime != null) {
+      try {
+        final endTime = DateTime.now();
+        final counts = await _dbService.getSessionSampleCounts(_sessionStartTime!, endTime);
+        final session = WSession(
+          id: _currentSessionId,
+          startTime: _sessionStartTime!,
+          endTime: endTime,
+          distanceMeters: _totalDistanceMeters,
+          sampleCount: counts['total'] ?? 0,
+          pingCount: counts['pings'] ?? 0,
+          successCount: counts['successes'] ?? 0,
+        );
+        await _dbService.updateSession(session);
+        await _logger.logServiceEvent('Session $_currentSessionId finalized: ${counts['total']} samples, ${counts['pings']} pings, ${counts['successes']} successes, ${_totalDistanceMeters.toStringAsFixed(0)}m');
+      } catch (e) {
+        await _logger.logError('Session Finalize', e.toString());
+      }
+      _currentSessionId = null;
+      _sessionStartTime = null;
+    }
     
     _isTracking = false;
     await _logger.logServiceEvent('Tracking stopped successfully');
@@ -499,6 +550,7 @@ class LocationService {
     _sampleSavedController.close();
     _pingEventController.close();
     _totalDistanceController.close();
+    _speedController.close();
     _loraCompanion.dispose();
   }
 }

@@ -1,22 +1,33 @@
-# MeshCore Wardrive iOS App
+# MeshCore Wardrive Android App - Source Code
 
-A Flutter-based iOS application for mapping MeshCore mesh network coverage in real-time.
+A Flutter-based Android application for mapping MeshCore mesh network coverage in real-time.
 
-⚠️ **iOS Version**: This version only supports Bluetooth connectivity (no USB support due to iOS limitations).
+## 📥 Download Pre-built APK
 
-🤖 **Looking for Android?** The full-featured Android version with USB support is available at [Meshcore-Wardrive-Android](https://github.com/mintylinux/Meshcore-Wardrive-Android)
+**Latest Release:** [Download from Releases Repository](https://github.com/mintylinux/Meshcore-Wardrive-Android)
 
 ## 🚀 Features
 
 - Real-time GPS tracking with foreground service
-- **Bluetooth connectivity** for MeshCore companion radios (iOS compatible)
+- USB and Bluetooth connectivity for MeshCore companion radios
 - Auto-ping functionality with configurable intervals (50m, 200m, 0.5 miles, 1 mile)
 - Manual ping testing
 - Success rate based coverage visualization with color coding
 - Clickable coverage squares showing detailed statistics
 - Repeater discovery and tracking
-- Data export to JSON
-- Web map upload functionality
+- Per-repeater coverage filtering
+- Coverage gap finder for identifying dead zones
+- Data export to JSON, CSV, GPX, and KML
+- Share coverage map screenshots with stats
+- Web map upload functionality (multi-site)
+- Route trail with color-coded path
+- Session history with notes and replay
+- Offline map tile caching
+- Heatmap overlay visualization
+- Signal trend charts (RSSI, SNR, response time)
+- Live speed display
+- Repeater response time tracking
+- Color blind accessibility modes
 - Debug terminal with logging
 - Light/Dark theme support
 
@@ -25,17 +36,16 @@ A Flutter-based iOS application for mapping MeshCore mesh network coverage in re
 ### Prerequisites
 
 - Flutter SDK (3.10.0 or higher)
-- Xcode (for iOS development)
-- macOS with iOS development environment configured
-- iOS device or simulator
-- A MeshCore companion radio device with Bluetooth (for testing)
+- Android Studio or VS Code with Flutter extensions
+- Android SDK with API level 21+
+- A MeshCore companion radio device (for testing)
 
 ### Installation
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/mintylinux/Meshcore_Wardrive_IOS.git
-cd meshcore_wardrive_ios
+git clone https://github.com/mintylinux/Meshcore-Wardrive-Android-Source.git
+cd meshcore_wardrive
 ```
 
 2. Install dependencies:
@@ -53,39 +63,42 @@ flutter pub run flutter_launcher_icons
 flutter run
 ```
 
-### Building for iOS
+### Building Release APK
 
 ```bash
-# Debug build
-flutter build ios --debug
-
-# Release build
-flutter build ios --release
-
-# Open in Xcode
-open ios/Runner.xcworkspace
+flutter build apk --release
 ```
+
+The APK will be located at: `build/app/outputs/flutter-apk/app-release.apk`
 
 ## 📁 Project Structure
 
 ```
 lib/
 ├── main.dart                    # App entry point
+├── constants/
+│   └── app_version.dart         # Version constant
 ├── models/
-│   └── models.dart              # Data models (Sample, Coverage, Repeater)
+│   └── models.dart              # Data models (Sample, Coverage, Repeater, WSession)
 ├── screens/
-│   ├── map_screen.dart          # Main map interface
-│   └── debug_log_screen.dart    # Debug terminal
+│   ├── map_screen.dart              # Main map interface
+│   ├── debug_log_screen.dart        # Debug terminal
+│   ├── debug_diagnostics_screen.dart # Advanced diagnostics
+│   ├── session_history_screen.dart   # Session history viewer
+│   └── signal_trend_screen.dart      # Signal trend charts
 ├── services/
 │   ├── location_service.dart         # GPS tracking & auto-ping
 │   ├── lora_companion_service.dart   # LoRa device communication
 │   ├── database_service.dart         # SQLite database
 │   ├── aggregation_service.dart      # Coverage calculation
 │   ├── upload_service.dart           # Web map upload
+│   ├── settings_service.dart         # User preferences
 │   ├── meshcore_protocol.dart        # Protocol implementation
-│   └── debug_log_service.dart        # Debug logging
+│   ├── debug_log_service.dart        # Debug logging
+│   └── persistent_debug_logger.dart  # Persistent log storage
 └── utils/
-    └── geohash_utils.dart        # Geohash utilities
+    ├── geohash_utils.dart        # Geohash utilities
+    └── color_blind_palette.dart  # Accessible color schemes
 ```
 
 ## 🔧 Configuration
@@ -127,22 +140,26 @@ flutter test
 
 Key packages:
 - `flutter_map` - Map display
+- `flutter_map_cache` - Offline tile caching
+- `flutter_map_heatmap` - Heatmap overlay
+- `fl_chart` - Signal trend charts
 - `geolocator` - GPS tracking
 - `flutter_foreground_task` - Background service
-- `flutter_blue_plus` - Bluetooth connectivity (iOS compatible)
+- `usb_serial` - USB connectivity
+- `flutter_blue_plus` - Bluetooth connectivity
 - `sqflite` - Local database
 - `geohash_plus` - Geohash encoding
 - `pointycastle` - Encryption
+- `share_plus` - Share screenshots & exports
+- `screenshot` / `saver_gallery` - Screenshot capture
 
 See [pubspec.yaml](pubspec.yaml) for complete list.
 
-## 🐛 Known Issues & iOS Limitations
+## 🐛 Known Issues
 
-- **No USB support** - iOS does not allow USB serial connections to external devices
-- **Bluetooth only** - Only Bluetooth connection to LoRa companion devices is supported
-- iOS may limit background location tracking based on system power management
-- Location permission: "Always Allow" required for background tracking
-- Bluetooth connection may be interrupted by iOS system events
+- Some Android devices may require "Location Always" permission for background tracking
+- USB connectivity requires OTG cable and data-capable cable
+- #meshwar channel must be joined in MeshCore app before first use
 
 ## 🤝 Contributing
 
@@ -169,8 +186,6 @@ For issues and questions:
 
 ---
 
-**Current Version:** 1.0.27-iOS
+**Current Version:** 1.0.30
 
-**Platform:** iOS (Bluetooth only)
-
-**See also:** [README_iOS.md](README_iOS.md) for detailed iOS-specific information
+**Minimum Android Version:** Android 5.0 (API 21)

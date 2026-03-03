@@ -1,5 +1,59 @@
 # Changelog
 
+## v1.0.30 - 2026-03-03
+
+### Added
+- **Route Trail**: Color-coded polyline showing your driven path on the map
+  - Green = successful ping, Red = failed ping, Blue = GPS-only
+  - Segments break on 5-minute gaps to avoid connecting unrelated sessions
+  - Toggle in Settings: "Show Route Trail"
+- **Session History**: Track and review individual wardrive sessions
+  - Automatically records session on start/stop tracking with duration, distance, sample/ping counts
+  - New "Session History" screen accessible from Settings → Data Management
+  - Add notes to sessions for future reference
+  - Tap a session to filter the map to only that session's data
+  - Clear filter from Settings when done
+- **Offline Map Tiles**: Map tiles are now cached locally for offline use
+  - Tiles cache passively as you view them — no manual download needed
+  - Cached tiles persist across app restarts
+  - "Clear Tile Cache" button in Settings → Data Management
+- **Heatmap Overlay**: Smooth heat gradient visualization of ping activity
+  - Successful pings glow hotter (red), failed pings are warm (orange/yellow), GPS-only points are cool (green)
+  - Toggle in Settings: "Show Heatmap"
+  - Independent of coverage grid — both can be on simultaneously
+- **Speed Display**: Live speed readout in the control panel (mph or km/h based on distance unit)
+- **CSV Export**: Export samples as CSV files in addition to JSON
+- **GPX/KML Export**: Export route and ping data as GPX or KML for use in Google Earth, etc.
+  - GPX includes trackpoints with timestamps and signal data
+  - KML includes route LineString plus color-coded success/fail placemarks
+- **Share Coverage Map**: One-tap screenshot + share with coverage stats
+  - Auto-captures clean map screenshot and attaches sample count, success rate, repeater count
+- **Per-Repeater Coverage View**: Filter map to show coverage from a specific repeater
+  - Settings → Data Management → "Filter by Repeater" lists all known repeaters
+  - Quick-filter "Filter by This" button added to repeater info dialog
+  - Clear filter button to restore full view
+- **Repeater Response Time Tracking**: Measures elapsed time from ping send to first response
+  - Response time (ms) stored per sample and displayed in sample info popup
+  - Logged in debug output for all successful and timed-out pings
+- **Coverage Gap Finder**: Identifies areas with poor or no mesh coverage
+  - Settings → Data Management → "Find Coverage Gaps"
+  - Lists areas with <30% success rate, sorted worst-first
+  - Tap any gap to navigate directly to it on the map
+- **Signal Trend Chart**: Interactive line charts for RSSI, SNR, and response time over time
+  - Segmented metric selector (RSSI / SNR / Response)
+  - Touch tooltips with exact values and timestamps
+  - Min/Avg/Max/Points summary stats
+  - Accessible from Settings → Debug → "Signal Trends"
+
+### Technical
+- New `sessions` SQLite table (DB version 5 → 6), `response_time_ms` column (DB version 6 → 7)
+- Added dependencies: `flutter_map_cache`, `dio_cache_interceptor`, `dio_cache_interceptor_file_store`, `flutter_map_heatmap`, `fl_chart`
+- New `SessionHistoryScreen` with session cards showing stats, notes, and map filtering
+- New `SignalTrendScreen` with `fl_chart` line charts for signal metrics
+- `LocationService` now creates/finalizes session records on start/stop tracking
+- `PingResult` and `Sample` models extended with `responseTimeMs` field
+- Export dialog reworked with format picker (JSON/CSV/GPX/KML) then save/share choice
+
 ## v1.0.29.1 - 2026-02-27
 
 ### Added

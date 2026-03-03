@@ -23,9 +23,15 @@ import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:screenshot/screenshot.dart';
 import 'package:saver_gallery/saver_gallery.dart';
+import 'package:flutter_map_cache/flutter_map_cache.dart';
+import 'package:dio_cache_interceptor/dio_cache_interceptor.dart';
+import 'package:dio_cache_interceptor_file_store/dio_cache_interceptor_file_store.dart';
+import 'package:flutter_map_heatmap/flutter_map_heatmap.dart';
 import 'dart:typed_data';
 import 'debug_log_screen.dart';
 import 'debug_diagnostics_screen.dart';
+import 'session_history_screen.dart';
+import 'signal_trend_screen.dart';
 import '../main.dart';
 import '../constants/app_version.dart';
 
@@ -73,12 +79,14 @@ class _MapScreenState extends State<MapScreen> {
   StreamSubscription<void>? _sampleSavedSubscription;
   StreamSubscription<String>? _pingEventSubscription;
   StreamSubscription<double>? _distanceSubscription;
+  StreamSubscription<double>? _speedSubscription;
   
   // Ping visual indicator
   bool _showPingPulse = false;
   
   // Distance tracking
   double _totalDistance = 0.0;
+  double _currentSpeed = 0.0;
   String _distanceUnit = 'miles';
   
   // Color blind mode
@@ -104,6 +112,19 @@ class _MapScreenState extends State<MapScreen> {
   
   // Map rotation lock
   bool _lockRotationNorth = false;
+  
+  // Route trail
+  bool _showRouteTrail = false;
+  
+  // Session filter
+  WSession? _activeSessionFilter;
+  
+  // Offline tile cache
+  CacheStore? _tileCacheStore;
+  
+  // Heatmap
+  bool _showHeatmap = false;
+  final StreamController<void> _heatmapRebuildStream = StreamController.broadcast();
 
   @override
   void initState() {
@@ -112,6 +133,10 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _initialize() async {
+    // Initialize tile cache store
+    final cacheDir = await getApplicationDocumentsDirectory();
+    _tileCacheStore = FileCacheStore('${cacheDir.path}/tile_cache');
+    
     // Load saved settings
     await _loadSettings();
     
@@ -168,6 +193,17 @@ class _MapScreenState extends State<MapScreen> {
       }
     });
     
+    // Subscribe to speed updates
+    _speedSubscription = _locationService.speedStream.listen((speed) {
+      if (mounted) {
+        setState(() {
+          _currentSpeed = _distanceUnit == 'miles'
+              ? _locationService.currentSpeedMph
+              : _locationService.currentSpeedKmh;
+        });
+      }
+    });
+    
     await _loadSamples();
     await _getCurrentLocation();
     
@@ -193,6 +229,8 @@ class _MapScreenState extends State<MapScreen> {
     final colorBlindMode = await _settingsService.getColorBlindMode();
     final discoveryTimeout = await _settingsService.getDiscoveryTimeout();
     final fuelUnit = await _settingsService.getFuelUnit();
+    final showRouteTrail = await _settingsService.getShowRouteTrail();
+    final showHeatmap = await _settingsService.getShowHeatmap();
     
     setState(() {
       _showSamples = showSamples;
@@ -210,6 +248,8 @@ class _MapScreenState extends State<MapScreen> {
       _colorBlindMode = colorBlindMode;
       _discoveryTimeoutSeconds = discoveryTimeout;
       _fuelUnit = fuelUnit;
+      _showRouteTrail = showRouteTrail;
+      _showHeatmap = showHeatmap;
     });
     
     // Apply to services
@@ -229,8 +269,18 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _loadSamples() async {
-    final samples = await _locationService.getAllSamples();
+    var samples = await _locationService.getAllSamples();
     final count = await _locationService.getSampleCount();
+    
+    // Apply session time filter if active
+    if (_activeSessionFilter != null) {
+      final start = _activeSessionFilter!.startTime;
+      final end = _activeSessionFilter!.endTime ?? DateTime.now();
+      samples = samples.where((s) =>
+          s.timestamp.isAfter(start.subtract(const Duration(seconds: 1))) &&
+          s.timestamp.isBefore(end.add(const Duration(seconds: 1)))
+      ).toList();
+    }
     
     // Update connection status
     final loraService = _locationService.loraCompanion;
@@ -341,12 +391,50 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _exportData() async {
-    // Ask user if they want to save to folder or share
+    // Ask user for export format
+    final format = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Export Format'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.code),
+              title: const Text('JSON'),
+              subtitle: const Text('Full data with all fields'),
+              onTap: () => Navigator.pop(context, 'json'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.table_chart),
+              title: const Text('CSV'),
+              subtitle: const Text('Spreadsheet-compatible'),
+              onTap: () => Navigator.pop(context, 'csv'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.route),
+              title: const Text('GPX'),
+              subtitle: const Text('GPS track for mapping apps'),
+              onTap: () => Navigator.pop(context, 'gpx'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.map),
+              title: const Text('KML'),
+              subtitle: const Text('Google Earth format'),
+              onTap: () => Navigator.pop(context, 'kml'),
+            ),
+          ],
+        ),
+      ),
+    );
+    
+    if (format == null) return;
+    
+    // Ask save or share
     final choice = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Export Data'),
-        content: const Text('How would you like to export your data?'),
+        title: Text('Export as ${format.toUpperCase()}'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, 'save'),
@@ -367,41 +455,133 @@ class _MapScreenState extends State<MapScreen> {
     if (choice == null) return;
     
     try {
-      final data = await _locationService.exportSamples();
-      final json = jsonEncode(data);
+      final samples = await _locationService.getAllSamples();
       final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-      final fileName = 'meshcore_export_$timestamp.json';
+      String content;
+      String fileName;
+      String extension;
+      
+      switch (format) {
+        case 'csv':
+          content = _buildCsvExport(samples);
+          extension = 'csv';
+          fileName = 'meshcore_export_$timestamp.csv';
+          break;
+        case 'gpx':
+          content = _buildGpxExport(samples);
+          extension = 'gpx';
+          fileName = 'meshcore_export_$timestamp.gpx';
+          break;
+        case 'kml':
+          content = _buildKmlExport(samples);
+          extension = 'kml';
+          fileName = 'meshcore_export_$timestamp.kml';
+          break;
+        default:
+          final data = await _locationService.exportSamples();
+          content = jsonEncode(data);
+          extension = 'json';
+          fileName = 'meshcore_export_$timestamp.json';
+      }
       
       if (choice == 'save') {
-        // Let user choose where to save (provide bytes for Android/iOS)
-        final outputFile = await FilePicker.platform.saveFile(
+        await FilePicker.platform.saveFile(
           dialogTitle: 'Save Export',
           fileName: fileName,
           type: FileType.custom,
-          allowedExtensions: ['json'],
-          bytes: utf8.encode(json), // Required on Android/iOS
+          allowedExtensions: [extension],
+          bytes: utf8.encode(content),
         );
-        
-        if (outputFile != null) {
-          _showSnackBar('Exported ${data.length} samples');
-        }
+        _showSnackBar('Exported ${samples.length} samples as ${format.toUpperCase()}');
       } else if (choice == 'share') {
-        // Create temporary file and share
         final directory = await getExternalStorageDirectory();
         final file = File('${directory!.path}/$fileName');
-        await file.writeAsString(json);
+        await file.writeAsString(content);
         
         await Share.shareXFiles(
           [XFile(file.path)],
           subject: 'MeshCore Wardrive Export',
-          text: 'Exported ${data.length} samples from MeshCore Wardrive',
+          text: 'Exported ${samples.length} samples from MeshCore Wardrive',
         );
-        
         _showSnackBar('Export shared');
       }
     } catch (e) {
       _showSnackBar('Export failed: $e');
     }
+  }
+  
+  String _buildCsvExport(List<Sample> samples) {
+    final buffer = StringBuffer();
+    buffer.writeln('id,lat,lon,timestamp,geohash,rssi,snr,pingSuccess,path');
+    for (final s in samples) {
+      buffer.writeln(
+        '${s.id},${s.position.latitude},${s.position.longitude},'
+        '${s.timestamp.toIso8601String()},${s.geohash},'
+        '${s.rssi ?? ''},${s.snr ?? ''},'
+        '${s.pingSuccess ?? ''},${s.path ?? ''}'
+      );
+    }
+    return buffer.toString();
+  }
+  
+  String _buildGpxExport(List<Sample> samples) {
+    final sorted = List<Sample>.from(samples)
+      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    
+    final buffer = StringBuffer();
+    buffer.writeln('<?xml version="1.0" encoding="UTF-8"?>');
+    buffer.writeln('<gpx version="1.1" creator="MeshCore Wardrive"');
+    buffer.writeln('  xmlns="http://www.topografix.com/GPX/1/1">');
+    buffer.writeln('  <trk>');
+    buffer.writeln('    <name>MeshCore Wardrive ${DateFormat('yyyy-MM-dd').format(DateTime.now())}</name>');
+    buffer.writeln('    <trkseg>');
+    for (final s in sorted) {
+      buffer.writeln('      <trkpt lat="${s.position.latitude}" lon="${s.position.longitude}">');
+      buffer.writeln('        <time>${s.timestamp.toUtc().toIso8601String()}</time>');
+      if (s.rssi != null) buffer.writeln('        <desc>RSSI: ${s.rssi} dBm, SNR: ${s.snr} dB</desc>');
+      buffer.writeln('      </trkpt>');
+    }
+    buffer.writeln('    </trkseg>');
+    buffer.writeln('  </trk>');
+    buffer.writeln('</gpx>');
+    return buffer.toString();
+  }
+  
+  String _buildKmlExport(List<Sample> samples) {
+    final sorted = List<Sample>.from(samples)
+      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    
+    final coords = sorted.map((s) => 
+      '${s.position.longitude},${s.position.latitude},0'
+    ).join('\n            ');
+    
+    // Build placemarks for ping results
+    final placemarks = StringBuffer();
+    for (final s in sorted.where((s) => s.pingSuccess != null)) {
+      final icon = s.pingSuccess == true ? '#successStyle' : '#failStyle';
+      placemarks.writeln('    <Placemark>');
+      placemarks.writeln('      <styleUrl>$icon</styleUrl>');
+      placemarks.writeln('      <description>${s.pingSuccess == true ? 'Success' : 'Failed'}${s.rssi != null ? ' RSSI:${s.rssi}' : ''}</description>');
+      placemarks.writeln('      <Point><coordinates>${s.position.longitude},${s.position.latitude},0</coordinates></Point>');
+      placemarks.writeln('    </Placemark>');
+    }
+    
+    return '''<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>MeshCore Wardrive ${DateFormat('yyyy-MM-dd').format(DateTime.now())}</name>
+    <Style id="successStyle"><IconStyle><color>ff00ff00</color></IconStyle></Style>
+    <Style id="failStyle"><IconStyle><color>ff0000ff</color></IconStyle></Style>
+    <Placemark>
+      <name>Route Trail</name>
+      <LineString>
+        <coordinates>
+            $coords
+        </coordinates>
+      </LineString>
+    </Placemark>
+$placemarks  </Document>
+</kml>''';
   }
 
   Future<void> _importData() async {
@@ -607,6 +787,8 @@ class _MapScreenState extends State<MapScreen> {
     _sampleSavedSubscription?.cancel();
     _pingEventSubscription?.cancel();
     _distanceSubscription?.cancel();
+    _speedSubscription?.cancel();
+    _heatmapRebuildStream.close();
     _locationService.dispose();
     super.dispose();
   }
@@ -715,13 +897,126 @@ class _MapScreenState extends State<MapScreen> {
               : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
           subdomains: isDarkMode ? const ['a', 'b', 'c', 'd'] : const [],
           userAgentPackageName: 'com.meshcore.wardrive',
+          tileProvider: _tileCacheStore != null
+              ? CachedTileProvider(
+                  store: _tileCacheStore!,
+                )
+              : null,
         ),
+        if (_showRouteTrail) _buildRouteTrailLayer(),
+        if (_showHeatmap) _buildHeatmapLayer(),
         if (_showCoverage) ..._buildCoverageLayers(),
         if (_showSamples) _buildSampleLayer(),
         if (_showEdges) _buildEdgeLayer(),
         if (_showRepeaters) _buildRepeaterLayer(),
         if (_currentPosition != null && !_hideUIForScreenshot) _buildCurrentLocationLayer(),
       ],
+    );
+  }
+
+  Widget _buildRouteTrailLayer() {
+    if (_samples.isEmpty) return const SizedBox.shrink();
+    
+    // Sort samples by timestamp (oldest first)
+    final sorted = List<Sample>.from(_samples)
+      ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    
+    final polylines = <Polyline>[];
+    const maxGapMinutes = 5; // Break trail if gap > 5 minutes
+    
+    var segmentPoints = <LatLng>[];
+    Color segmentColor = Colors.blue;
+    
+    for (int i = 0; i < sorted.length; i++) {
+      final sample = sorted[i];
+      
+      // Determine color for this point
+      Color pointColor;
+      if (sample.pingSuccess == true) {
+        pointColor = ColorBlindPalette.getSuccessColor(_colorBlindMode);
+      } else if (sample.pingSuccess == false) {
+        pointColor = ColorBlindPalette.getFailureColor(_colorBlindMode);
+      } else {
+        pointColor = Colors.blue;
+      }
+      
+      if (i > 0) {
+        final gap = sample.timestamp.difference(sorted[i - 1].timestamp).inMinutes;
+        
+        if (gap > maxGapMinutes) {
+          // Save current segment and start new one
+          if (segmentPoints.length >= 2) {
+            polylines.add(Polyline(
+              points: List.from(segmentPoints),
+              color: segmentColor.withValues(alpha: 0.7),
+              strokeWidth: 3.0,
+            ));
+          }
+          segmentPoints = [sample.position];
+          segmentColor = pointColor;
+          continue;
+        }
+        
+        // If color changes, end current segment and start new one
+        if (pointColor != segmentColor && segmentPoints.length >= 2) {
+          polylines.add(Polyline(
+            points: List.from(segmentPoints),
+            color: segmentColor.withValues(alpha: 0.7),
+            strokeWidth: 3.0,
+          ));
+          // Start new segment from last point of previous segment for continuity
+          segmentPoints = [segmentPoints.last, sample.position];
+          segmentColor = pointColor;
+          continue;
+        }
+      } else {
+        segmentColor = pointColor;
+      }
+      
+      segmentPoints.add(sample.position);
+    }
+    
+    // Add final segment
+    if (segmentPoints.length >= 2) {
+      polylines.add(Polyline(
+        points: segmentPoints,
+        color: segmentColor.withValues(alpha: 0.7),
+        strokeWidth: 3.0,
+      ));
+    }
+    
+    return PolylineLayer(polylines: polylines);
+  }
+
+  Widget _buildHeatmapLayer() {
+    if (_samples.isEmpty) return const SizedBox.shrink();
+    
+    // Convert samples to weighted points
+    // Higher weight = hotter on the heatmap
+    final data = _samples.map((sample) {
+      double weight;
+      if (sample.pingSuccess == true) {
+        weight = 1.0; // Successful ping = hot
+      } else if (sample.pingSuccess == false) {
+        weight = 0.5; // Failed ping = warm
+      } else {
+        weight = 0.2; // GPS-only = cool
+      }
+      return WeightedLatLng(sample.position, weight);
+    }).toList();
+    
+    return HeatMapLayer(
+      heatMapDataSource: InMemoryHeatMapDataSource(data: data),
+      heatMapOptions: HeatMapOptions(
+        gradient: {
+          0.25: Colors.green,
+          0.50: Colors.yellow,
+          0.75: Colors.orange,
+          1.0: Colors.red,
+        },
+        minOpacity: 0.1,
+      ),
+      reset: _heatmapRebuildStream.stream,
     );
   }
 
@@ -955,9 +1250,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
               const SizedBox(width: 4),
               Text(
-                _loraConnected 
-                    ? 'BT'  // iOS version only supports Bluetooth
-                    : 'No LoRa',
+                _loraConnected ? 'BT' : 'No LoRa',
                 style: TextStyle(
                   fontSize: 12,
                   color: _loraConnected ? Colors.green : Colors.grey,
@@ -995,7 +1288,7 @@ class _MapScreenState extends State<MapScreen> {
                   ),
                   if (_isTracking)
                     Text(
-                      '${_totalDistance.toStringAsFixed(2)} ${_distanceUnit == 'miles' ? 'mi' : 'km'}',
+                      '${_totalDistance.toStringAsFixed(2)} ${_distanceUnit == 'miles' ? 'mi' : 'km'} • ${_currentSpeed.toStringAsFixed(1)} ${_distanceUnit == 'miles' ? 'mph' : 'km/h'}',
                       style: const TextStyle(fontSize: 10, color: Colors.grey),
                     ),
                 ],
@@ -1100,8 +1393,38 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _showConnectionDialog() {
-    // iOS version: Directly scan for Bluetooth devices
-    _connectBluetooth();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Connect LoRa Device'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Connect via Bluetooth:', 
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                _connectBluetooth();
+              },
+              icon: const Icon(Icons.bluetooth),
+              label: const Text('Scan Bluetooth'),
+              style: ElevatedButton.styleFrom(
+                minimumSize: const Size(double.infinity, 40),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _connectBluetooth() async {
@@ -1482,6 +1805,32 @@ class _MapScreenState extends State<MapScreen> {
                   _showSuccessfulOnly = value;
                 });
                 setModalState(() {});
+              },
+            ),
+            SwitchListTile(
+              title: const Text('Show Route Trail'),
+              subtitle: const Text('Draw driven path on map'),
+              value: _showRouteTrail,
+              onChanged: (value) async {
+                setState(() {
+                  _showRouteTrail = value;
+                });
+                setModalState(() {});
+                await _settingsService.setShowRouteTrail(value);
+              },
+            ),
+            SwitchListTile(
+              title: const Text('Show Heatmap'),
+              subtitle: const Text('Heat gradient overlay of ping activity'),
+              value: _showHeatmap,
+              onChanged: (value) async {
+                setState(() {
+                  _showHeatmap = value;
+                });
+                setModalState(() {});
+                await _settingsService.setShowHeatmap(value);
+                // Trigger heatmap rebuild
+                _heatmapRebuildStream.add(null);
               },
             ),
             SwitchListTile(
@@ -1877,8 +2226,33 @@ class _MapScreenState extends State<MapScreen> {
               ),
             ),
             ListTile(
+              title: const Text('Session History'),
+              subtitle: Text(_activeSessionFilter != null 
+                  ? 'Filtering by session' 
+                  : 'View past wardrive sessions'),
+              leading: const Icon(Icons.history),
+              trailing: _activeSessionFilter != null
+                  ? IconButton(
+                      icon: const Icon(Icons.clear, color: Colors.red),
+                      onPressed: () {
+                        setState(() {
+                          _activeSessionFilter = null;
+                        });
+                        setModalState(() {});
+                        _loadSamples();
+                        _showSnackBar('Session filter cleared');
+                      },
+                      tooltip: 'Clear filter',
+                    )
+                  : const Icon(Icons.arrow_forward),
+              onTap: () {
+                Navigator.pop(context);
+                _openSessionHistory();
+              },
+            ),
+            ListTile(
               title: const Text('Export Data'),
-              subtitle: const Text('Save samples to file'),
+              subtitle: const Text('JSON, CSV, GPX, or KML'),
               leading: const Icon(Icons.upload),
               trailing: const Icon(Icons.arrow_forward),
               onTap: () {
@@ -1897,12 +2271,65 @@ class _MapScreenState extends State<MapScreen> {
               },
             ),
             ListTile(
+              title: const Text('Share Coverage Map'),
+              subtitle: const Text('Screenshot + share in one tap'),
+              leading: const Icon(Icons.share),
+              onTap: () {
+                Navigator.pop(context);
+                _shareCoverageMap();
+              },
+            ),
+            ListTile(
+              title: const Text('Filter by Repeater'),
+              subtitle: Text(_includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty
+                  ? 'Filtering: $_includeOnlyRepeaters'
+                  : 'Show coverage from a specific repeater'),
+              leading: const Icon(Icons.filter_alt),
+              trailing: _includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear, color: Colors.red),
+                      onPressed: () async {
+                        setState(() { _includeOnlyRepeaters = null; });
+                        await _settingsService.setIncludeOnlyRepeaters(null);
+                        setModalState(() {});
+                        _loadSamples();
+                        _showSnackBar('Repeater filter cleared');
+                      },
+                    )
+                  : const Icon(Icons.arrow_forward),
+              onTap: () {
+                Navigator.pop(context);
+                _showRepeaterFilterPicker();
+              },
+            ),
+            ListTile(
+              title: const Text('Find Coverage Gaps'),
+              subtitle: const Text('Locate areas with poor signal'),
+              leading: const Icon(Icons.location_searching),
+              trailing: const Icon(Icons.arrow_forward),
+              onTap: () {
+                Navigator.pop(context);
+                _findCoverageGaps();
+              },
+            ),
+            ListTile(
               title: const Text('Clear Map'),
               subtitle: const Text('Delete all samples and coverage'),
               leading: const Icon(Icons.delete, color: Colors.red),
               onTap: () {
                 Navigator.pop(context);
                 _clearData();
+              },
+            ),
+            ListTile(
+              title: const Text('Clear Tile Cache'),
+              subtitle: const Text('Remove cached offline map tiles'),
+              leading: const Icon(Icons.cached, color: Colors.orange),
+              onTap: () async {
+                if (_tileCacheStore != null) {
+                  await _tileCacheStore!.clean();
+                  _showSnackBar('Tile cache cleared');
+                }
               },
             ),
             const Divider(),
@@ -1912,6 +2339,21 @@ class _MapScreenState extends State<MapScreen> {
                 'Debug',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
               ),
+            ),
+            ListTile(
+              title: const Text('Signal Trends'),
+              subtitle: const Text('RSSI, SNR & response time charts'),
+              leading: const Icon(Icons.show_chart),
+              trailing: const Icon(Icons.arrow_forward),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => SignalTrendScreen(samples: _samples),
+                  ),
+                );
+              },
             ),
             ListTile(
               title: const Text('Debug Diagnostics'),
@@ -2075,6 +2517,23 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
   
+  void _openSessionHistory() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SessionHistoryScreen(
+          onSessionSelected: (session) {
+            setState(() {
+              _activeSessionFilter = session;
+            });
+            _loadSamples();
+            _showSnackBar('Showing session from ${DateFormat('MMM d, h:mm a').format(session.startTime)}');
+          },
+        ),
+      ),
+    );
+  }
+  
   void _openDebugDiagnostics() {
     Navigator.push(
       context,
@@ -2225,6 +2684,15 @@ class _MapScreenState extends State<MapScreen> {
                   Text('${sample.snr} dB'),
                 ],
               ),
+            if (sample.responseTimeMs != null) ...[
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Text('Response: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text('${sample.responseTimeMs} ms'),
+                ],
+              ),
+            ],
           ],
         ),
         actions: [
@@ -2259,6 +2727,16 @@ class _MapScreenState extends State<MapScreen> {
           ],
         ),
         actions: [
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              setState(() { _includeOnlyRepeaters = repeater.id; });
+              await _settingsService.setIncludeOnlyRepeaters(repeater.id);
+              _loadSamples();
+              _showSnackBar('Filtering by ${(repeater.id.length > 8 ? repeater.id.substring(0,8) : repeater.id).toUpperCase()}');
+            },
+            child: const Text('Filter by This'),
+          ),
           TextButton(
             onPressed: () {
               Navigator.pop(context);
@@ -2726,6 +3204,199 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
   
+  Future<void> _shareCoverageMap() async {
+    try {
+      // Hide UI elements for clean screenshot
+      setState(() { _hideUIForScreenshot = true; });
+      await Future.delayed(const Duration(milliseconds: 300));
+      
+      final Uint8List? imageBytes = await _screenshotController.capture(pixelRatio: 2.0);
+      
+      setState(() { _hideUIForScreenshot = false; });
+      
+      if (imageBytes == null) {
+        _showSnackBar('Failed to capture screenshot');
+        return;
+      }
+      
+      // Build stats text
+      final pingSamples = _samples.where((s) => s.pingSuccess != null).toList();
+      final successCount = pingSamples.where((s) => s.pingSuccess == true).length;
+      final failCount = pingSamples.where((s) => s.pingSuccess == false).length;
+      final totalPings = successCount + failCount;
+      final successRate = totalPings > 0 ? ((successCount / totalPings) * 100).toStringAsFixed(0) : 'N/A';
+      final coverageCount = _aggregationResult?.coverages.length ?? 0;
+      
+      final statsText = 'MeshCore Wardrive Coverage Map\n'
+          '📍 ${_samples.length} samples • $coverageCount coverage areas\n'
+          '✅ $successCount success • ❌ $failCount failed • $successRate% rate\n'
+          '🔁 ${_repeaters.length} repeaters discovered';
+      
+      // Save temp file and share
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/meshcore_coverage_${DateTime.now().millisecondsSinceEpoch}.png');
+      await file.writeAsBytes(imageBytes);
+      
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: 'MeshCore Wardrive Coverage',
+        text: statsText,
+      );
+    } catch (e) {
+      setState(() { _hideUIForScreenshot = false; });
+      _showSnackBar('Share failed: $e');
+    }
+  }
+  
+  void _showRepeaterFilterPicker() {
+    // Collect all known repeater IDs from coverage data and discovered repeaters
+    final Set<String> knownIds = {};
+    if (_aggregationResult != null) {
+      for (final cov in _aggregationResult!.coverages) {
+        knownIds.addAll(cov.repeaters);
+      }
+    }
+    for (final r in _repeaters) {
+      knownIds.add(r.id);
+    }
+    
+    if (knownIds.isEmpty) {
+      _showSnackBar('No repeaters found yet - do some wardriving first!');
+      return;
+    }
+    
+    final sortedIds = knownIds.toList()..sort();
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Filter by Repeater'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: sortedIds.length,
+            itemBuilder: (context, index) {
+              final id = sortedIds[index];
+              final displayId = (id.length > 8 ? id.substring(0, 8) : id).toUpperCase();
+              // Find matching repeater for name
+              final repeater = _repeaters.cast<Repeater?>().firstWhere(
+                (r) => r!.id == id, orElse: () => null,
+              );
+              final name = repeater?.name;
+              final isSelected = _includeOnlyRepeaters == id;
+              
+              return ListTile(
+                leading: Icon(
+                  Icons.cell_tower,
+                  color: isSelected ? Colors.blue : Colors.purple,
+                ),
+                title: Text(name ?? 'Repeater $displayId'),
+                subtitle: Text(displayId, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                trailing: isSelected ? const Icon(Icons.check_circle, color: Colors.blue) : null,
+                onTap: () async {
+                  Navigator.pop(context);
+                  setState(() { _includeOnlyRepeaters = id; });
+                  await _settingsService.setIncludeOnlyRepeaters(id);
+                  _loadSamples();
+                  _showSnackBar('Showing coverage from $displayId');
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          if (_includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty)
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                setState(() { _includeOnlyRepeaters = null; });
+                await _settingsService.setIncludeOnlyRepeaters(null);
+                _loadSamples();
+                _showSnackBar('Repeater filter cleared');
+              },
+              child: const Text('Clear Filter', style: TextStyle(color: Colors.red)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _findCoverageGaps() {
+    if (_aggregationResult == null || _aggregationResult!.coverages.isEmpty) {
+      _showSnackBar('No coverage data yet - do some wardriving first!');
+      return;
+    }
+    
+    // Find coverage areas with low/zero success rate
+    final gaps = <Coverage>[];
+    for (final cov in _aggregationResult!.coverages) {
+      final total = cov.received + cov.lost;
+      if (total == 0) continue; // Skip GPS-only areas
+      final successRate = cov.received / total;
+      if (successRate < 0.3) { // Less than 30% success = gap
+        gaps.add(cov);
+      }
+    }
+    
+    // Sort by success rate (worst first)
+    gaps.sort((a, b) {
+      final aRate = a.received / (a.received + a.lost);
+      final bRate = b.received / (b.received + b.lost);
+      return aRate.compareTo(bRate);
+    });
+    
+    if (gaps.isEmpty) {
+      _showSnackBar('No coverage gaps found! All areas have >30% success rate.');
+      return;
+    }
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Coverage Gaps (${gaps.length})'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: gaps.length,
+            itemBuilder: (context, index) {
+              final gap = gaps[index];
+              final total = gap.received + gap.lost;
+              final rate = total > 0 ? ((gap.received / total) * 100).toStringAsFixed(0) : '0';
+              return ListTile(
+                leading: Icon(
+                  Icons.warning,
+                  color: double.parse(rate) == 0 ? Colors.red : Colors.orange,
+                ),
+                title: Text('$rate% success rate'),
+                subtitle: Text(
+                  '${gap.position.latitude.toStringAsFixed(4)}, '
+                  '${gap.position.longitude.toStringAsFixed(4)}\n'
+                  '${gap.received.toStringAsFixed(1)} received / ${gap.lost.toStringAsFixed(1)} lost',
+                ),
+                onTap: () {
+                  Navigator.pop(context);
+                  _mapController.move(gap.position, 15.0);
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<UploadEndpoint?> _showEditEndpointDialog(UploadEndpoint existing) async {
     final nameController = TextEditingController(text: existing.name);
     final urlController = TextEditingController(text: existing.url);

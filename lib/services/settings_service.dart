@@ -19,6 +19,8 @@ class SettingsService {
   static const String _vehicleMpgKey = 'vehicle_mpg';
   static const String _gasPriceKey = 'gas_price_per_gallon';
   static const String _fuelUnitKey = 'fuel_unit';
+  static const String _showRouteTrailKey = 'show_route_trail';
+  static const String _showHeatmapKey = 'show_heatmap';
   
   Future<bool> getShowSamples() async {
     final prefs = await SharedPreferences.getInstance();
@@ -231,5 +233,29 @@ class SettingsService {
   Future<void> setFuelUnit(String value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_fuelUnitKey, value);
+  }
+  
+  /// Get show route trail setting
+  Future<bool> getShowRouteTrail() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_showRouteTrailKey) ?? false;
+  }
+  
+  /// Set show route trail setting
+  Future<void> setShowRouteTrail(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_showRouteTrailKey, value);
+  }
+  
+  /// Get show heatmap setting
+  Future<bool> getShowHeatmap() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_showHeatmapKey) ?? false;
+  }
+  
+  /// Set show heatmap setting
+  Future<void> setShowHeatmap(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_showHeatmapKey, value);
   }
 }

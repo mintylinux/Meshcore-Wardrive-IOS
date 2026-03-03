@@ -9,6 +9,7 @@ class Sample {
   final int? rssi;
   final int? snr;
   final bool? pingSuccess;
+  final int? responseTimeMs;
 
   Sample({
     required this.id,
@@ -19,6 +20,7 @@ class Sample {
     this.rssi,
     this.snr,
     this.pingSuccess,
+    this.responseTimeMs,
   });
 
   Map<String, dynamic> toJson() => {
@@ -31,6 +33,7 @@ class Sample {
         'rssi': rssi,
         'snr': snr,
         'pingSuccess': pingSuccess,
+        'responseTimeMs': responseTimeMs,
       };
 
   factory Sample.fromJson(Map<String, dynamic> json) {
@@ -43,6 +46,7 @@ class Sample {
       rssi: json['rssi'] as int?,
       snr: json['snr'] as int?,
       pingSuccess: json['pingSuccess'] as bool?,
+      responseTimeMs: json['responseTimeMs'] as int?,
     );
   }
 
@@ -56,6 +60,7 @@ class Sample {
         'rssi': rssi,
         'snr': snr,
         'pingSuccess': pingSuccess == true ? 1 : (pingSuccess == false ? 0 : null),
+        'response_time_ms': responseTimeMs,
       };
 
   factory Sample.fromMap(Map<String, dynamic> map) {
@@ -69,6 +74,7 @@ class Sample {
       rssi: map['rssi'] as int?,
       snr: map['snr'] as int?,
       pingSuccess: pingSuccessInt == null ? null : pingSuccessInt == 1,
+      responseTimeMs: map['response_time_ms'] as int?,
     );
   }
 }
@@ -177,6 +183,58 @@ class Edge {
     required this.coverage,
     required this.repeater,
   });
+}
+
+class WSession {
+  final int? id;
+  final DateTime startTime;
+  final DateTime? endTime;
+  final double distanceMeters;
+  final int sampleCount;
+  final int pingCount;
+  final int successCount;
+  final String? notes;
+
+  WSession({
+    this.id,
+    required this.startTime,
+    this.endTime,
+    this.distanceMeters = 0.0,
+    this.sampleCount = 0,
+    this.pingCount = 0,
+    this.successCount = 0,
+    this.notes,
+  });
+
+  Duration? get duration => endTime?.difference(startTime);
+  
+  double get successRate => pingCount > 0 ? successCount / pingCount : 0.0;
+
+  Map<String, dynamic> toMap() => {
+        if (id != null) 'id': id,
+        'start_time': startTime.millisecondsSinceEpoch,
+        'end_time': endTime?.millisecondsSinceEpoch,
+        'distance_meters': distanceMeters,
+        'sample_count': sampleCount,
+        'ping_count': pingCount,
+        'success_count': successCount,
+        'notes': notes,
+      };
+
+  factory WSession.fromMap(Map<String, dynamic> map) {
+    return WSession(
+      id: map['id'] as int?,
+      startTime: DateTime.fromMillisecondsSinceEpoch(map['start_time'] as int),
+      endTime: map['end_time'] != null
+          ? DateTime.fromMillisecondsSinceEpoch(map['end_time'] as int)
+          : null,
+      distanceMeters: (map['distance_meters'] as num?)?.toDouble() ?? 0.0,
+      sampleCount: (map['sample_count'] as int?) ?? 0,
+      pingCount: (map['ping_count'] as int?) ?? 0,
+      successCount: (map['success_count'] as int?) ?? 0,
+      notes: map['notes'] as String?,
+    );
+  }
 }
 
 class NodeData {
