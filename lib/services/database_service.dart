@@ -7,7 +7,8 @@ import 'dart:io';
 class DatabaseService {
   static Database? _database;
   static const String _databaseName = 'meshcore_wardrive.db';
-  static const int _databaseVersion = 7;
+  static const int _databaseVersion = 8;
+  static const String tableDuctingCache = 'ducting_cache';
 
   static const String tableSamples = 'samples';
   static const String tableUploads = 'uploads';
@@ -45,7 +46,8 @@ class DatabaseService {
         pingSuccess INTEGER,
         observerNames TEXT,
         uploaded INTEGER DEFAULT 0,
-        response_time_ms INTEGER
+        response_time_ms INTEGER,
+        ducting_risk TEXT
       )
     ''');
 
@@ -57,6 +59,24 @@ class DatabaseService {
     // Create index on timestamp for sorting
     await db.execute('''
       CREATE INDEX idx_samples_timestamp ON $tableSamples (timestamp)
+    ''');
+    
+    // Create ducting cache table
+    await db.execute('''
+      CREATE TABLE $tableDuctingCache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp INTEGER NOT NULL,
+        lat REAL NOT NULL,
+        lon REAL NOT NULL,
+        risk TEXT NOT NULL,
+        n_surface REAL,
+        n_925 REAL,
+        gradient REAL,
+        fetched_at INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX idx_ducting_timestamp ON $tableDuctingCache (timestamp)
     ''');
     
     // Create uploads tracking table (per-endpoint upload tracking)
@@ -142,6 +162,25 @@ class DatabaseService {
     }
     if (oldVersion < 7) {
       await db.execute('ALTER TABLE $tableSamples ADD COLUMN response_time_ms INTEGER');
+    }
+    if (oldVersion < 8) {
+      await db.execute('ALTER TABLE $tableSamples ADD COLUMN ducting_risk TEXT');
+      await db.execute('''
+        CREATE TABLE $tableDuctingCache (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          timestamp INTEGER NOT NULL,
+          lat REAL NOT NULL,
+          lon REAL NOT NULL,
+          risk TEXT NOT NULL,
+          n_surface REAL,
+          n_925 REAL,
+          gradient REAL,
+          fetched_at INTEGER NOT NULL
+        )
+      ''');
+      await db.execute('''
+        CREATE INDEX idx_ducting_timestamp ON $tableDuctingCache (timestamp)
+      ''');
     }
   }
 

@@ -55,6 +55,7 @@ class LoRaCompanionService {
   BluetoothDevice? _bluetoothDevice;
   BluetoothCharacteristic? _txCharacteristic;
   BluetoothCharacteristic? _rxCharacteristic;
+  UsbPort? _usbPort;
   StreamSubscription? _deviceSubscription;
   String? _deviceName; // Connected device's advertised name
   
@@ -86,6 +87,10 @@ class LoRaCompanionService {
   final Map<String, DateTime> _lastContactRequestAt = {}; // keyPrefix -> time
   Duration _contactRequestCooldown = const Duration(minutes: 5);
   
+  // Carpeater: cache full 32-byte public keys by prefix (populated from contact frames)
+  final Map<String, Uint8List> _contactPubKeyCache = {};
+  // Carpeater: callback receives (pushCode, frameData) for login + binary responses
+  void Function(int pushCode, Uint8List data)? _carpeaterPayloadCallback;
   
   // Settings
   String? _ignoredRepeaterPrefix;
@@ -269,6 +274,66 @@ class LoRaCompanionService {
       return false;
     } catch (e) {
       print('Bluetooth connection error: $e');
+      return false;
+    }
+  }
+
+  // ============================================================================
+  // DEVICE CONNECTION - USB
+  // ============================================================================
+
+  /// Scan for USB LoRa devices
+  Future<List<UsbDevice>> scanUsbDevices() async {
+    try {
+      return await UsbSerial.listDevices();
+    } catch (e) {
+      print('Error scanning USB: $e');
+      return [];
+    }
+  }
+
+  /// Connect to LoRa device via USB
+  Future<bool> connectUsb(UsbDevice device) async {
+    try {
+      _usbPort = await device.create();
+      if (_usbPort == null) return false;
+
+      bool opened = await _usbPort!.open();
+      if (!opened) return false;
+
+      await _usbPort!.setDTR(true);
+      await _usbPort!.setRTS(true);
+      await _usbPort!.setPortParameters(
+        115200, // Standard baud rate for Meshtastic
+        UsbPort.DATABITS_8,
+        UsbPort.STOPBITS_1,
+        UsbPort.PARITY_NONE,
+      );
+
+      _deviceSubscription = _usbPort!.inputStream?.listen((data) {
+        _handleDeviceData(Uint8List.fromList(data));
+      });
+
+      _connectionType = ConnectionType.usb;
+      print('Connected to LoRa device via USB');
+      
+      // Ensure USB mode in protocol parser (wrapped frames with '>')
+      _protocol.setBLEMode(false);
+      _debugLog.logInfo('Protocol set to USB mode (wrapped frames)');
+      
+      // Send handshake
+      await Future.delayed(const Duration(milliseconds: 500));
+      final handshake = _createCommandForDevice(CMD_APP_START);
+      await _sendBinaryToDevice(handshake);
+      _debugLog.logInfo('Sent handshake');
+
+      // Load full contact list so repeaters appear on the map
+      await Future.delayed(const Duration(milliseconds: 150));
+      await _requestAllContacts();
+      
+      return true;
+    } catch (e) {
+      print('USB connection error: $e');
       return false;
     }
   }
@@ -659,6 +724,8 @@ class LoRaCompanionService {
   Future<void> _sendToDevice(String data) async {
     if (_connectionType == ConnectionType.bluetooth && _txCharacteristic != null) {
       await _txCharacteristic!.write(utf8.encode(data));
+    } else if (_connectionType == ConnectionType.usb && _usbPort != null) {
+      await _usbPort!.write(Uint8List.fromList(utf8.encode(data)));
     }
   }
 
@@ -706,6 +773,19 @@ class LoRaCompanionService {
         break;
       case RESP_CODE_SENT:
         _debugLog.logInfo('✅ Message sent');
+        _carpeaterPayloadCallback?.call(RESP_CODE_SENT, frame.data);
+        break;
+      case PUSH_CODE_LOGIN_SUCCESS:
+        _debugLog.logInfo('✅ Login success (0x85)');
+        _carpeaterPayloadCallback?.call(PUSH_CODE_LOGIN_SUCCESS, frame.data);
+        break;
+      case PUSH_CODE_LOGIN_FAIL:
+        _debugLog.logError('❌ Login failed (0x86)');
+        _carpeaterPayloadCallback?.call(PUSH_CODE_LOGIN_FAIL, frame.data);
+        break;
+      case PUSH_CODE_BINARY_RESPONSE:
+        _debugLog.logLoRa('📦 Binary response (0x8C), len=${frame.data.length}');
+        _carpeaterPayloadCallback?.call(PUSH_CODE_BINARY_RESPONSE, frame.data);
         break;
       case RESP_CODE_BATT_AND_STORAGE:
         _handleBatteryResponse(frame.data);
@@ -822,16 +902,16 @@ class LoRaCompanionService {
       final shouldIgnore = _ignoredRepeaterPrefix != null && 
           pubkeyShort.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase());
       
-      if (shouldIgnore) {
-        _debugLog.logInfo('⛔ Ignoring discovery response from mobile repeater: $pubkeyShort');
-        return;
-      }
-      
-      // Request contact info to get repeater position (if we don't already have it)
+      // Always request contact details so the pubkey gets cached (needed for Carpeater login)
       if (!_knownRepeaters.containsKey(pubkey) && discovery['pubkey_bytes'] != null) {
         final pubkeyBytes = discovery['pubkey_bytes'] as Uint8List;
         _debugLog.logInfo('📞 Requesting position for $pubkeyShort');
         await _requestContactDetails(pubkeyBytes);
+      }
+      
+      if (shouldIgnore) {
+        _debugLog.logInfo('⛔ Ignoring discovery response from mobile repeater: $pubkeyShort');
+        return;
       }
       
       // Check if this response matches a pending ping
@@ -870,6 +950,9 @@ class LoRaCompanionService {
     
     // Store node type for filtering
     _nodeTypes[contact.publicKeyPrefix] = contact.advType;
+    
+    // Cache full public key for Carpeater mode
+    _contactPubKeyCache[contact.publicKeyPrefix] = Uint8List.fromList(contact.publicKey);
     
     _debugLog.logInfo('Contact: ${contact.advName ?? contact.publicKeyPrefix} (type: ${contact.advType})');
     
@@ -1054,6 +1137,10 @@ class LoRaCompanionService {
         // BLE: Send the raw frame data without wrapper
         await _txCharacteristic!.write(data.toList());
         _debugLog.logLoRa('✅ BLE write complete');
+      } else if (_connectionType == ConnectionType.usb && _usbPort != null) {
+        // USB: Data should already have '< + length' wrapper
+        await _usbPort!.write(data);
+        _debugLog.logLoRa('✅ USB write complete');
       }
     } catch (e) {
       _debugLog.logError('Send error: $e');
@@ -1191,11 +1278,14 @@ class LoRaCompanionService {
       
       if (_connectionType == ConnectionType.bluetooth && _bluetoothDevice != null) {
         await _bluetoothDevice!.disconnect();
+      } else if (_connectionType == ConnectionType.usb && _usbPort != null) {
+        await _usbPort!.close();
       }
 
       _bluetoothDevice = null;
       _txCharacteristic = null;
       _rxCharacteristic = null;
+      _usbPort = null;
       _connectionType = ConnectionType.none;
       _deviceName = null;
       _connectionStateSubscription = null;
@@ -1209,6 +1299,92 @@ class LoRaCompanionService {
     // MQTT removed - no-op
   }
 
+
+  // ============================================================================
+  // CARPEATER MODE - PUBLIC METHODS FOR REPEATER CONTROL
+  // ============================================================================
+
+  /// Send a login command to a target repeater
+  Future<bool> sendRepeaterLogin({
+    required Uint8List targetPubKey,
+    required String password,
+  }) async {
+    if (!isDeviceConnected) {
+      _debugLog.logError('Cannot send login: Device not connected');
+      return false;
+    }
+    try {
+      _debugLog.logInfo('Sending login to repeater...');
+      final payload = _protocol.createLoginPayload(targetPubKey, password);
+      final cmd = _createCommandForDevice(CMD_SEND_LOGIN, payload);
+      await _sendBinaryToDevice(cmd);
+      _debugLog.logInfo('Login command sent');
+      return true;
+    } catch (e) {
+      _debugLog.logError('Failed to send login: $e');
+      return false;
+    }
+  }
+
+  /// Send a CLI command to a logged-in repeater
+  Future<bool> sendRepeaterCliCommand({
+    required Uint8List targetPubKey,
+    required String command,
+  }) async {
+    if (!isDeviceConnected) {
+      _debugLog.logError('Cannot send CLI command: Device not connected');
+      return false;
+    }
+    try {
+      _debugLog.logInfo('Sending CLI command to repeater: $command');
+      final payload = _protocol.createCliCommandPayload(targetPubKey, command);
+      final cmd = _createCommandForDevice(CMD_SEND_MESSAGE, payload);
+      await _sendBinaryToDevice(cmd);
+      _debugLog.logInfo('CLI command sent');
+      return true;
+    } catch (e) {
+      _debugLog.logError('Failed to send CLI command: $e');
+      return false;
+    }
+  }
+
+  /// Request neighbours from a target repeater (requires login first)
+  Future<bool> sendRepeaterGetNeighbours({
+    required Uint8List targetPubKey,
+  }) async {
+    if (!isDeviceConnected) {
+      _debugLog.logError('Cannot request neighbours: Device not connected');
+      return false;
+    }
+    try {
+      _debugLog.logInfo('Requesting neighbours via CMD_SEND_BINARY_REQ...');
+      final requestData = _protocol.createGetNeighboursRequestData();
+      final payload = _protocol.createBinaryReqPayload(targetPubKey, requestData);
+      final cmd = _createCommandForDevice(CMD_SEND_BINARY_REQ, payload);
+      await _sendBinaryToDevice(cmd);
+      _debugLog.logInfo('Binary neighbours request sent');
+      return true;
+    } catch (e) {
+      _debugLog.logError('Failed to send binary neighbours request: $e');
+      return false;
+    }
+  }
+
+  /// Get the full 32-byte public key for a contact by its ID prefix.
+  Uint8List? getContactPubKey(String prefix) {
+    final upperPrefix = prefix.toUpperCase();
+    for (final entry in _contactPubKeyCache.entries) {
+      if (entry.key.toUpperCase().startsWith(upperPrefix)) {
+        return Uint8List.fromList(entry.value);
+      }
+    }
+    return null;
+  }
+
+  /// Register/unregister a callback for Carpeater push frames.
+  void setCarpeaterCallback(void Function(int pushCode, Uint8List data)? callback) {
+    _carpeaterPayloadCallback = callback;
+  }
 
   void dispose() {
     disconnectDevice();

@@ -45,5 +45,23 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>MeshCore Wardrive needs Bluetooth to communicate with your LoRa companion radio for mesh network coverage mapping.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>MeshCore Wardrive needs Bluetooth to communicate with your LoRa companion radio.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>MeshCore Wardrive needs your location to map mesh network coverage as you move.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>MeshCore Wardrive needs background location access to continue mapping coverage while the app is in the background.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>MeshCore Wardrive needs background location access to continue mapping coverage while the app is in the background.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MeshCore Wardrive uses the local network for MQTT communication with mesh network observers.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>location</string>
+		<string>fetch</string>
+	</array>
 </dict>
 </plist>

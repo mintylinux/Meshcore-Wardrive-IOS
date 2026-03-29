@@ -10,6 +10,7 @@ class Sample {
   final int? snr;
   final bool? pingSuccess;
   final int? responseTimeMs;
+  final String? ductingRisk;
 
   Sample({
     required this.id,
@@ -21,6 +22,7 @@ class Sample {
     this.snr,
     this.pingSuccess,
     this.responseTimeMs,
+    this.ductingRisk,
   });
 
   Map<String, dynamic> toJson() => {
@@ -34,19 +36,24 @@ class Sample {
         'snr': snr,
         'pingSuccess': pingSuccess,
         'responseTimeMs': responseTimeMs,
+        'ductingRisk': ductingRisk,
       };
 
   factory Sample.fromJson(Map<String, dynamic> json) {
     return Sample(
       id: json['id'] as String,
-      position: LatLng(json['lat'] as double, json['lon'] as double),
+      position: LatLng(
+        (json['lat'] as num).toDouble(),
+        (json['lon'] as num).toDouble(),
+      ),
       timestamp: DateTime.parse(json['timestamp'] as String),
       path: json['path'] as String?,
       geohash: json['geohash'] as String,
-      rssi: json['rssi'] as int?,
-      snr: json['snr'] as int?,
+      rssi: (json['rssi'] as num?)?.toInt(),
+      snr: (json['snr'] as num?)?.toInt(),
       pingSuccess: json['pingSuccess'] as bool?,
-      responseTimeMs: json['responseTimeMs'] as int?,
+      responseTimeMs: (json['responseTimeMs'] as num?)?.toInt(),
+      ductingRisk: json['ductingRisk'] as String?,
     );
   }
 
@@ -61,6 +68,7 @@ class Sample {
         'snr': snr,
         'pingSuccess': pingSuccess == true ? 1 : (pingSuccess == false ? 0 : null),
         'response_time_ms': responseTimeMs,
+        'ducting_risk': ductingRisk,
       };
 
   factory Sample.fromMap(Map<String, dynamic> map) {
@@ -75,6 +83,7 @@ class Sample {
       snr: map['snr'] as int?,
       pingSuccess: pingSuccessInt == null ? null : pingSuccessInt == 1,
       responseTimeMs: map['response_time_ms'] as int?,
+      ductingRisk: map['ducting_risk'] as String?,
     );
   }
 }

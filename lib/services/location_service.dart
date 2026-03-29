@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
@@ -11,12 +12,19 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'persistent_debug_logger.dart';
 import 'settings_service.dart';
+import 'ducting_service.dart';
+import 'carpeater_service.dart';
 
 class LocationService {
   final DatabaseService _dbService = DatabaseService();
   final LoRaCompanionService _loraCompanion = LoRaCompanionService();
   final PersistentDebugLogger _logger = PersistentDebugLogger();
   final SettingsService _settings = SettingsService();
+  final DuctingService _ductingService = DuctingService();
+  
+  LocationService() {
+    _carpeaterService = CarpeaterService(_loraCompanion, _settings);
+  }
   StreamSubscription<Position>? _positionStreamSubscription;
   bool _isTracking = false;
   bool _autoPingEnabled = false;
@@ -53,6 +61,49 @@ class LocationService {
   double _currentSpeedMps = 0.0;
   double get currentSpeedMph => _currentSpeedMps * 2.23694;
   double get currentSpeedKmh => _currentSpeedMps * 3.6;
+  
+  // Ducting monitoring
+  bool _ductingEnabled = false;
+  Timer? _ductingFetchTimer;
+  
+  // Carpeater mode
+  late final CarpeaterService _carpeaterService;
+  bool _carpeaterModeEnabled = false;
+  StreamSubscription<List<Map<String, dynamic>>>? _carpeaterNeighboursSubscription;
+  StreamSubscription<void>? _carpeaterDiscoveryStartedSubscription;
+  LatLng? _carpeaterDiscoveryPosition; // GPS snapshot at moment of discovery
+  
+  /// Get ducting service for UI access
+  DuctingService get ductingService => _ductingService;
+  
+  /// Get carpeater service for UI access
+  CarpeaterService get carpeaterService => _carpeaterService;
+  
+  /// Enable or disable ducting monitoring at runtime
+  void setDuctingEnabled(bool enabled) {
+    _ductingEnabled = enabled;
+    if (enabled && _isTracking && _lastPosition != null) {
+      // Kick off an initial fetch and start periodic timer
+      _ductingService.fetchAndCache(_lastPosition!.latitude, _lastPosition!.longitude);
+      _ductingFetchTimer?.cancel();
+      _ductingFetchTimer = Timer.periodic(const Duration(minutes: 60), (_) async {
+        if (_lastPosition != null) {
+          await _ductingService.fetchAndCache(
+            _lastPosition!.latitude, _lastPosition!.longitude,
+          );
+        }
+      });
+    } else if (!enabled) {
+      _ductingFetchTimer?.cancel();
+      _ductingFetchTimer = null;
+    }
+  }
+  
+  /// Enable or disable Carpeater mode at runtime
+  void setCarpeaterMode(bool enabled) {
+    _carpeaterModeEnabled = enabled;
+    _logger.logServiceEvent('Carpeater mode ${enabled ? "enabled" : "disabled"}');
+  }
 
   /// Check if location permissions are granted
   Future<bool> checkPermissions() async {
@@ -90,10 +141,16 @@ class LocationService {
       if (!isEnabled) return null;
 
       final Position position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 0,
-        ),
+        locationSettings: false
+            ? AndroidSettings(
+                accuracy: LocationAccuracy.high,
+                distanceFilter: 0,
+                forceLocationManager: true,
+              )
+            : const LocationSettings(
+                accuracy: LocationAccuracy.high,
+                distanceFilter: 0,
+              ),
       );
 
       return LatLng(position.latitude, position.longitude);
@@ -174,10 +231,16 @@ class LocationService {
       await _logger.logServiceEvent('Foreground service started successfully');
       print('Foreground service started');
       
-      const LocationSettings locationSettings = LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5, // Update every 5 meters
-      );
+      final locationSettings = false
+          ? AndroidSettings(
+              accuracy: LocationAccuracy.high,
+              distanceFilter: 5, // Update every 5 meters
+              forceLocationManager: true,
+            )
+          : const LocationSettings(
+              accuracy: LocationAccuracy.high,
+              distanceFilter: 5,
+            );
 
       _positionStreamSubscription = Geolocator.getPositionStream(
         locationSettings: locationSettings,
@@ -204,6 +267,26 @@ class LocationService {
       _totalDistanceMeters = 0.0;
       _lastPosition = null;
       _totalDistanceController.add(_totalDistanceMeters);
+      
+      // Start ducting monitoring if enabled (non-blocking)
+      _ductingEnabled = await _settings.getShowDucting();
+      if (_ductingEnabled) {
+        // Fire-and-forget initial fetch using the position stream (don't block with getCurrentPosition)
+        _ductingFetchTimer?.cancel();
+        _ductingFetchTimer = Timer.periodic(const Duration(minutes: 60), (_) async {
+          if (_lastPosition != null) {
+            await _ductingService.fetchAndCache(
+              _lastPosition!.latitude, _lastPosition!.longitude,
+            );
+          }
+        });
+        // Kick off first fetch after a short delay so GPS has time to get a fix
+        Future.delayed(const Duration(seconds: 5), () {
+          if (_lastPosition != null) {
+            _ductingService.fetchAndCache(_lastPosition!.latitude, _lastPosition!.longitude);
+          }
+        });
+      }
       
       // Create a new session record
       _sessionStartTime = DateTime.now();
@@ -318,7 +401,7 @@ class LocationService {
       await _logger.logPingEvent('Checking ping condition: autoPing=$_autoPingEnabled, deviceConnected=$isConnected, lastPingPos=${_lastPingPosition != null ? "set" : "null"}');
     }
     
-    if (_autoPingEnabled && isConnected) {
+    if (_autoPingEnabled && isConnected && !_carpeaterModeEnabled) {
       bool shouldPing = false;
       
       if (_lastPingPosition == null) {
@@ -362,6 +445,13 @@ class LocationService {
     }
 
     // Only save GPS sample if auto-ping is disabled or no ping triggered
+    // Tag with ducting risk if monitoring is enabled
+    String? ductingRisk;
+    if (_ductingEnabled) {
+      ductingRisk = await _ductingService.getCurrentRisk(DateTime.now());
+      if (ductingRisk == DuctingRisk.unknown) ductingRisk = null;
+    }
+    
     final sample = Sample(
       id: _generateUniqueId(),
       position: latLng,
@@ -371,6 +461,7 @@ class LocationService {
       rssi: null,
       snr: null,
       pingSuccess: null, // GPS-only sample (no ping attempted)
+      ductingRisk: ductingRisk,
     );
 
     // Save to database
@@ -423,6 +514,13 @@ class LocationService {
         );
       });
       
+      // Tag with ducting risk if monitoring is enabled
+      String? ductingRisk;
+      if (_ductingEnabled) {
+        ductingRisk = await _ductingService.getCurrentRisk(DateTime.now());
+        if (ductingRisk == DuctingRisk.unknown) ductingRisk = null;
+      }
+      
       // Create a new sample with ping results
       final sample = Sample(
         id: _generateUniqueId(),
@@ -434,6 +532,7 @@ class LocationService {
         snr: pingResult.snr,
         pingSuccess: pingSuccess,
         responseTimeMs: pingResult.responseTimeMs,
+        ductingRisk: ductingRisk,
       );
       
       // Save ping result as new sample
@@ -467,6 +566,15 @@ class LocationService {
     
     await _positionStreamSubscription?.cancel();
     _positionStreamSubscription = null;
+    
+    // Stop ducting monitoring
+    _ductingFetchTimer?.cancel();
+    _ductingFetchTimer = null;
+    
+    // Stop Carpeater mode
+    _carpeaterNeighboursSubscription?.cancel();
+    _carpeaterDiscoveryStartedSubscription?.cancel();
+    _carpeaterService.stop();
     
     // Stop foreground service
     await FlutterForegroundTask.stopService();
@@ -542,6 +650,92 @@ class LocationService {
     return '${timestamp}_$random';
   }
 
+  /// Start Carpeater discovery and subscribe to results
+  Future<bool> startCarpeater() async {
+    // Subscribe to discovery started (snapshot GPS position)
+    _carpeaterDiscoveryStartedSubscription = _carpeaterService.discoveryStartedStream.listen((_) {
+      _carpeaterDiscoveryPosition = _lastPosition;
+      _pingEventController.add('pinging');
+    });
+    
+    // Subscribe to neighbour results
+    _carpeaterNeighboursSubscription = _carpeaterService.neighboursStream.listen(_onCarpeaterNeighbours);
+    
+    final started = await _carpeaterService.start();
+    if (!started) {
+      _carpeaterDiscoveryStartedSubscription?.cancel();
+      _carpeaterNeighboursSubscription?.cancel();
+    }
+    return started;
+  }
+  
+  /// Handle Carpeater neighbour results — save as samples
+  void _onCarpeaterNeighbours(List<Map<String, dynamic>> neighbours) async {
+    final position = _carpeaterDiscoveryPosition ?? _lastPosition;
+    if (position == null) return;
+    
+    final geohash = GeohashUtils.sampleKey(position.latitude, position.longitude);
+    
+    // Get ducting risk if enabled
+    String? ductingRisk;
+    if (_ductingEnabled) {
+      ductingRisk = await _ductingService.getCurrentRisk(DateTime.now());
+      if (ductingRisk == DuctingRisk.unknown) ductingRisk = null;
+    }
+    
+    if (neighbours.isEmpty) {
+      // Dead zone — repeater heard nobody
+      final sample = Sample(
+        id: _generateUniqueId(),
+        position: position,
+        timestamp: DateTime.now(),
+        path: _carpeaterService.targetRepeaterId,
+        geohash: geohash,
+        pingSuccess: false,
+        ductingRisk: ductingRisk,
+      );
+      await _dbService.insertSample(sample);
+      _pingEventController.add('failed');
+    } else {
+      // Save one sample per neighbour
+      for (final n in neighbours) {
+        final pubkey = n['pubkey'] as String?;
+        final snr = (n['snr'] as num?)?.toInt();
+        final repeaterId = pubkey != null && pubkey.length >= 8
+            ? pubkey.substring(0, 8)
+            : pubkey;
+        
+        final sample = Sample(
+          id: _generateUniqueId(),
+          position: position,
+          timestamp: DateTime.now(),
+          path: repeaterId,
+          geohash: geohash,
+          snr: snr,
+          pingSuccess: true,
+          ductingRisk: ductingRisk,
+        );
+        await _dbService.insertSample(sample);
+      }
+      _pingEventController.add('success');
+    }
+    
+    _sampleSavedController.add(null);
+    
+    FlutterForegroundTask.updateService(
+      notificationTitle: 'MeshCore Wardrive',
+      notificationText: neighbours.isEmpty
+          ? 'Carpeater: No neighbours'
+          : 'Carpeater: ${neighbours.length} neighbours found',
+    );
+    Future.delayed(const Duration(seconds: 3), () {
+      FlutterForegroundTask.updateService(
+        notificationTitle: 'MeshCore Wardrive',
+        notificationText: 'Carpeater mode active',
+      );
+    });
+  }
+
   /// Dispose resources
   void dispose() {
     stopTracking();
@@ -551,6 +745,9 @@ class LocationService {
     _pingEventController.close();
     _totalDistanceController.close();
     _speedController.close();
+    _carpeaterNeighboursSubscription?.cancel();
+    _carpeaterDiscoveryStartedSubscription?.cancel();
+    _carpeaterService.dispose();
     _loraCompanion.dispose();
   }
 }

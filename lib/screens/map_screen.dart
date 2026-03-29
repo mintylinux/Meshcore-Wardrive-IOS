@@ -21,8 +21,6 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:screenshot/screenshot.dart';
-import 'package:saver_gallery/saver_gallery.dart';
 import 'package:flutter_map_cache/flutter_map_cache.dart';
 import 'package:dio_cache_interceptor/dio_cache_interceptor.dart';
 import 'package:dio_cache_interceptor_file_store/dio_cache_interceptor_file_store.dart';
@@ -34,6 +32,9 @@ import 'session_history_screen.dart';
 import 'signal_trend_screen.dart';
 import '../main.dart';
 import '../constants/app_version.dart';
+import '../services/ducting_service.dart';
+import '../services/carpeater_service.dart';
+import 'analytics_screen.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -125,6 +126,21 @@ class _MapScreenState extends State<MapScreen> {
   // Heatmap
   bool _showHeatmap = false;
   final StreamController<void> _heatmapRebuildStream = StreamController.broadcast();
+  
+  // Coverage prediction rings
+  bool _showPredictionRings = false;
+  
+  // Atmospheric ducting
+  bool _showDucting = false;
+  String _currentDuctingRisk = DuctingRisk.unknown;
+  
+  // Carpeater mode
+  bool _carpeaterEnabled = false;
+  String? _carpeaterRepeaterId;
+  String? _carpeaterPassword;
+  int _carpeaterInterval = 30;
+  CarpeaterState _carpeaterState = CarpeaterState.disabled;
+  StreamSubscription<CarpeaterState>? _carpeaterStateSubscription;
 
   @override
   void initState() {
@@ -137,6 +153,8 @@ class _MapScreenState extends State<MapScreen> {
     final cacheDir = await getApplicationDocumentsDirectory();
     _tileCacheStore = FileCacheStore('${cacheDir.path}/tile_cache');
     
+    // Initialize home screen widget
+    
     // Load saved settings
     await _loadSettings();
     
@@ -146,6 +164,11 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         _batteryPercent = percent;
       });
+    });
+    
+    // Subscribe to Carpeater state changes
+    _carpeaterStateSubscription = _locationService.carpeaterService.stateStream.listen((state) {
+      if (mounted) setState(() { _carpeaterState = state; });
     });
     
     // Subscribe to position updates
@@ -231,6 +254,8 @@ class _MapScreenState extends State<MapScreen> {
     final fuelUnit = await _settingsService.getFuelUnit();
     final showRouteTrail = await _settingsService.getShowRouteTrail();
     final showHeatmap = await _settingsService.getShowHeatmap();
+    final showPredictionRings = await _settingsService.getShowPredictionRings();
+    final showDucting = await _settingsService.getShowDucting();
     
     setState(() {
       _showSamples = showSamples;
@@ -250,7 +275,22 @@ class _MapScreenState extends State<MapScreen> {
       _fuelUnit = fuelUnit;
       _showRouteTrail = showRouteTrail;
       _showHeatmap = showHeatmap;
+      _showPredictionRings = showPredictionRings;
+      _showDucting = showDucting;
     });
+    
+    // Load Carpeater settings
+    final carpeaterEnabled = await _settingsService.getCarpeaterEnabled();
+    final carpeaterRepeaterId = await _settingsService.getCarpeaterRepeaterId();
+    final carpeaterPassword = await _settingsService.getCarpeaterPassword();
+    final carpeaterInterval = await _settingsService.getCarpeaterInterval();
+    setState(() {
+      _carpeaterEnabled = carpeaterEnabled;
+      _carpeaterRepeaterId = carpeaterRepeaterId;
+      _carpeaterPassword = carpeaterPassword;
+      _carpeaterInterval = carpeaterInterval;
+    });
+    _locationService.setCarpeaterMode(carpeaterEnabled);
     
     // Apply to services
     _locationService.setPingInterval(pingInterval);
@@ -311,15 +351,45 @@ class _MapScreenState extends State<MapScreen> {
     
     final combinedRepeaters = repeaterMap.values.toList();
     
+    final isConnected = loraService.isDeviceConnected;
+    final connType = loraService.connectionType;
+    
     setState(() {
       _samples = samples;
       _sampleCount = count;
       _aggregationResult = result;
-      _loraConnected = loraService.isDeviceConnected;
-      _connectionType = loraService.connectionType;
+      _loraConnected = isConnected;
+      _connectionType = connType;
       _autoPingEnabled = _locationService.isAutoPingEnabled;
       _repeaters = combinedRepeaters;
     });
+    
+    // Update ducting badge if enabled
+    if (_showDucting) {
+      final risk = await _locationService.ductingService.getLatestRisk();
+      if (mounted && risk != _currentDuctingRisk) {
+        setState(() { _currentDuctingRisk = risk; });
+      }
+    }
+    
+    // Update home screen widget
+    final connLabel = isConnected
+        ? (connType == ConnectionType.usb ? 'USB' : 'BT')
+        : '---';
+    final pingSamples = samples.where((s) => s.pingSuccess != null).toList();
+    final successCount = pingSamples.where((s) => s.pingSuccess == true).length;
+    final rate = pingSamples.isNotEmpty
+        ? '${(successCount / pingSamples.length * 100).toStringAsFixed(0)}%'
+        : '--';
+    final dist = _isTracking
+        ? '${_totalDistance.toStringAsFixed(1)} ${_distanceUnit == "miles" ? "mi" : "km"}'
+        : '--';
+      sampleCount: count,
+      isTracking: _isTracking,
+      connectionLabel: connLabel,
+      successRate: rate,
+      distance: dist,
+    );
   }
 
   Future<void> _toggleTracking() async {
@@ -340,8 +410,18 @@ class _MapScreenState extends State<MapScreen> {
       // Start tracking
       final started = await _locationService.startTracking();
       if (started) {
-        // Auto-enable ping if LoRa is connected
-        if (_loraConnected) {
+        // Auto-enable ping or Carpeater if LoRa is connected
+        if (_loraConnected && _carpeaterEnabled) {
+          _locationService.setCarpeaterMode(true);
+          final carpeaterStarted = await _locationService.startCarpeater();
+          setState(() {
+            _isTracking = true;
+            _autoPingEnabled = false;
+          });
+          _showSnackBar(carpeaterStarted
+              ? 'Carpeater mode started'
+              : 'Carpeater failed — check settings');
+        } else if (_loraConnected) {
           _locationService.enableAutoPing();
           setState(() {
             _isTracking = true;
@@ -909,6 +989,7 @@ $placemarks  </Document>
         if (_showSamples) _buildSampleLayer(),
         if (_showEdges) _buildEdgeLayer(),
         if (_showRepeaters) _buildRepeaterLayer(),
+        if (_showPredictionRings) _buildPredictionRingsLayer(),
         if (_currentPosition != null && !_hideUIForScreenshot) _buildCurrentLocationLayer(),
       ],
     );
@@ -1186,6 +1267,104 @@ $placemarks  </Document>
     return MarkerLayer(markers: markers);
   }
 
+  /// Generate polygon points approximating a circle at a given radius
+  List<LatLng> _circlePoints(LatLng center, double radiusMeters, {int segments = 72}) {
+    const distance = Distance();
+    return List.generate(segments, (i) {
+      final bearing = (360.0 / segments) * i;
+      return distance.offset(center, radiusMeters, bearing);
+    });
+  }
+
+  Widget _buildPredictionRingsLayer() {
+    if (_repeaters.isEmpty || _samples.isEmpty) return const SizedBox.shrink();
+
+    // Build lookup: repeater ID -> list of distances (meters) from successful samples
+    final Map<String, List<double>> repeaterDistances = {};
+    final Map<String, Repeater> repeaterById = {};
+    const distance = Distance();
+    final allowedPrefixes = _includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty
+        ? _includeOnlyRepeaters!.split(',').map((s) => s.trim().toUpperCase()).toList()
+        : null;
+
+    for (final repeater in _repeaters) {
+      // Skip repeaters at 0,0 (unknown position)
+      if (repeater.position.latitude == 0.0 && repeater.position.longitude == 0.0) continue;
+      if (allowedPrefixes != null) {
+        final repeaterId = repeater.id.toUpperCase();
+        final matches = allowedPrefixes.any((prefix) => repeaterId.startsWith(prefix));
+        if (!matches) continue;
+      }
+      repeaterById[repeater.id] = repeater;
+    }
+
+    // Match samples to repeaters by path (nodeId)
+    for (final sample in _samples) {
+      if (sample.pingSuccess != true || sample.path == null || sample.path!.isEmpty) continue;
+      final repeater = repeaterById[sample.path!];
+      if (repeater == null) continue;
+
+      final dist = distance.as(LengthUnit.Meter, sample.position, repeater.position);
+      // Skip impossibly large distances (GPS noise)
+      if (dist > 100000) continue; // 100km sanity cap
+
+      repeaterDistances.putIfAbsent(repeater.id, () => []);
+      repeaterDistances[repeater.id]!.add(dist);
+    }
+
+    final polygons = <Polygon>[];
+
+    for (final entry in repeaterDistances.entries) {
+      final repeater = repeaterById[entry.key]!;
+      final distances = entry.value..sort();
+
+      // Need at least 3 data points for meaningful prediction
+      if (distances.length < 3) continue;
+
+      // Percentile-based rings
+      final p25 = distances[(distances.length * 0.25).floor()];
+      final p75 = distances[(distances.length * 0.75).floor()];
+      final maxDist = distances.last;
+
+      // Skip if rings would be too small to see (<50m)
+      if (maxDist < 50) continue;
+
+      // Edge ring (outer, red) — max observed distance
+      polygons.add(Polygon(
+        points: _circlePoints(repeater.position, maxDist),
+        color: Colors.red.withValues(alpha: 0.05),
+        borderColor: Colors.red.withValues(alpha: 0.35),
+        borderStrokeWidth: 1.5,
+        isFilled: true,
+      ));
+
+      // Moderate ring (middle, yellow)
+      if (p75 > 50 && p75 < maxDist * 0.95) {
+        polygons.add(Polygon(
+          points: _circlePoints(repeater.position, p75),
+          color: Colors.yellow.withValues(alpha: 0.08),
+          borderColor: Colors.yellow.withValues(alpha: 0.5),
+          borderStrokeWidth: 1.5,
+          isFilled: true,
+        ));
+      }
+
+      // Strong ring (inner, green)
+      if (p25 > 50 && p25 < p75 * 0.95) {
+        polygons.add(Polygon(
+          points: _circlePoints(repeater.position, p25),
+          color: Colors.green.withValues(alpha: 0.10),
+          borderColor: Colors.green.withValues(alpha: 0.6),
+          borderStrokeWidth: 1.5,
+          isFilled: true,
+        ));
+      }
+    }
+
+    if (polygons.isEmpty) return const SizedBox.shrink();
+    return PolygonLayer(polygons: polygons);
+  }
+
   Widget _buildCurrentLocationLayer() {
     final markers = [
       // Main location dot
@@ -1250,7 +1429,9 @@ $placemarks  </Document>
               ),
               const SizedBox(width: 4),
               Text(
-                _loraConnected ? 'BT' : 'No LoRa',
+                _loraConnected 
+                    ? (_connectionType == ConnectionType.usb ? 'USB' : 'BT')
+                    : 'No LoRa',
                 style: TextStyle(
                   fontSize: 12,
                   color: _loraConnected ? Colors.green : Colors.grey,
@@ -1278,20 +1459,101 @@ $placemarks  </Document>
               const Text('•', style: TextStyle(color: Colors.grey)),
               const SizedBox(width: 12),
               // Stats
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Samples: $_sampleCount',
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                  ),
-                  if (_isTracking)
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                     Text(
-                      '${_totalDistance.toStringAsFixed(2)} ${_distanceUnit == 'miles' ? 'mi' : 'km'} • ${_currentSpeed.toStringAsFixed(1)} ${_distanceUnit == 'miles' ? 'mph' : 'km/h'}',
-                      style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      'Samples: $_sampleCount',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                     ),
-                ],
+                    if (_isTracking)
+                      Text(
+                        '${_totalDistance.toStringAsFixed(2)} ${_distanceUnit == 'miles' ? 'mi' : 'km'} • ${_currentSpeed.toStringAsFixed(1)} ${_distanceUnit == 'miles' ? 'mph' : 'km/h'}',
+                        style: const TextStyle(fontSize: 10, color: Colors.grey),
+                      ),
+                    if (_carpeaterEnabled && _carpeaterState != CarpeaterState.disabled)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: GestureDetector(
+                          onTap: _carpeaterState == CarpeaterState.error
+                              ? () async {
+                                  _showSnackBar('Retrying Carpeater...');
+                                  final ok = await _locationService.startCarpeater();
+                                  _showSnackBar(ok ? 'Carpeater reconnected' : 'Carpeater retry failed');
+                                }
+                              : null,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: (_carpeaterState == CarpeaterState.error
+                                  ? Colors.red
+                                  : _carpeaterState == CarpeaterState.loggedIn ||
+                                    _carpeaterState == CarpeaterState.discovering ||
+                                    _carpeaterState == CarpeaterState.fetchingNeighbours
+                                      ? Colors.green
+                                      : Colors.orange).withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: _carpeaterState == CarpeaterState.error
+                                    ? Colors.red
+                                    : _carpeaterState == CarpeaterState.loggedIn ||
+                                      _carpeaterState == CarpeaterState.discovering ||
+                                      _carpeaterState == CarpeaterState.fetchingNeighbours
+                                        ? Colors.green
+                                        : Colors.orange,
+                                width: 1,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  'CP: ${_carpeaterStateLabel()}',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.bold,
+                                    color: _carpeaterState == CarpeaterState.error
+                                        ? Colors.red
+                                        : _carpeaterState == CarpeaterState.loggedIn ||
+                                          _carpeaterState == CarpeaterState.discovering ||
+                                          _carpeaterState == CarpeaterState.fetchingNeighbours
+                                            ? Colors.green
+                                            : Colors.orange,
+                                  ),
+                                ),
+                                if (_carpeaterState == CarpeaterState.error) ...[
+                                  const SizedBox(width: 4),
+                                  Icon(Icons.refresh, size: 10, color: Colors.red),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_showDucting && _currentDuctingRisk != DuctingRisk.unknown)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: _getDuctingColor(_currentDuctingRisk).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: _getDuctingColor(_currentDuctingRisk), width: 1),
+                          ),
+                          child: Text(
+                            'Ducting: ${DuctingService.riskLabel(_currentDuctingRisk)}',
+                            style: TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              color: _getDuctingColor(_currentDuctingRisk),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
               const Spacer(),
               // Connect button or Manual Ping
@@ -1401,9 +1663,21 @@ $placemarks  </Document>
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Connect via Bluetooth:', 
+            const Text('Choose connection method:', 
                 style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                _connectUsb();
+              },
+              icon: const Icon(Icons.usb),
+              label: const Text('Scan USB Devices'),
+              style: ElevatedButton.styleFrom(
+                minimumSize: const Size(double.infinity, 40),
+              ),
+            ),
+            const SizedBox(height: 8),
             ElevatedButton.icon(
               onPressed: () {
                 Navigator.pop(context);
@@ -1425,6 +1699,48 @@ $placemarks  </Document>
         ],
       ),
     );
+  }
+
+  Future<void> _connectUsb() async {
+    try {
+      final devices = await _locationService.loraCompanion.scanUsbDevices();
+      
+      if (!mounted) return;
+      
+      if (devices.isEmpty) {
+        _showSnackBar('No USB devices found');
+        return;
+      }
+
+      final selected = await showDialog<UsbDevice>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Select USB Device'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: devices.map((device) {
+              return ListTile(
+                title: Text(device.productName ?? 'USB Device'),
+                subtitle: Text('VID: ${device.vid}, PID: ${device.pid}'),
+                onTap: () => Navigator.pop(context, device),
+              );
+            }).toList(),
+          ),
+        ),
+      );
+
+      if (selected != null) {
+        final connected = await _locationService.loraCompanion.connectUsb(selected);
+        if (connected) {
+          _showSnackBar('Connected via USB');
+          await _loadSamples();
+        } else {
+          _showSnackBar('Failed to connect USB device');
+        }
+      }
+    } catch (e) {
+      _showSnackBar('USB error: $e');
+    }
   }
 
   Future<void> _connectBluetooth() async {
@@ -1834,6 +2150,143 @@ $placemarks  </Document>
               },
             ),
             SwitchListTile(
+              title: const Text('Show Prediction Rings'),
+              subtitle: const Text('Estimated repeater coverage radius'),
+              value: _showPredictionRings,
+              onChanged: (value) async {
+                setState(() {
+                  _showPredictionRings = value;
+                });
+                setModalState(() {});
+                await _settingsService.setShowPredictionRings(value);
+              },
+            ),
+            SwitchListTile(
+              title: const Text('Atmospheric Ducting'),
+              subtitle: const Text('Monitor ducting conditions (needs internet)'),
+              value: _showDucting,
+              onChanged: (value) async {
+                setState(() {
+                  _showDucting = value;
+                });
+                setModalState(() {});
+                await _settingsService.setShowDucting(value);
+                _locationService.setDuctingEnabled(value);
+                if (value) {
+                  // Fetch immediately and update badge
+                  final risk = await _locationService.ductingService.getLatestRisk();
+                  setState(() { _currentDuctingRisk = risk; });
+                }
+              },
+            ),
+            const Divider(),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                'Carpeater Mode',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ),
+            SwitchListTile(
+              title: const Text('Enable Carpeater Mode'),
+              subtitle: Text(_carpeaterEnabled
+                  ? 'Using repeater for discovery'
+                  : 'Use a repeater to discover neighbors'),
+              value: _carpeaterEnabled,
+              onChanged: (value) async {
+                setState(() { _carpeaterEnabled = value; });
+                setModalState(() {});
+                await _settingsService.setCarpeaterEnabled(value);
+                _locationService.setCarpeaterMode(value);
+              },
+            ),
+            if (_carpeaterEnabled) ...[
+              ListTile(
+                title: const Text('Target Repeater'),
+                subtitle: Text(_carpeaterRepeaterId ?? 'Not set'),
+                leading: const Icon(Icons.cell_tower),
+                trailing: const Icon(Icons.edit, size: 20),
+                onTap: () async {
+                  final controller = TextEditingController(text: _carpeaterRepeaterId ?? '');
+                  final result = await showDialog<String>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Target Repeater'),
+                      content: TextField(
+                        controller: controller,
+                        decoration: const InputDecoration(
+                          labelText: 'Repeater ID Prefix',
+                          hintText: 'e.g., BAD5DC49',
+                        ),
+                        textCapitalization: TextCapitalization.characters,
+                      ),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                        TextButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text('Save')),
+                      ],
+                    ),
+                  );
+                  if (result != null) {
+                    setState(() { _carpeaterRepeaterId = result.isEmpty ? null : result; });
+                    setModalState(() {});
+                    await _settingsService.setCarpeaterRepeaterId(result.isEmpty ? null : result);
+                  }
+                },
+              ),
+              ListTile(
+                title: const Text('Admin Password'),
+                subtitle: Text(_carpeaterPassword != null ? '•' * _carpeaterPassword!.length : 'Not set'),
+                leading: const Icon(Icons.lock),
+                trailing: const Icon(Icons.edit, size: 20),
+                onTap: () async {
+                  final controller = TextEditingController(text: _carpeaterPassword ?? '');
+                  final result = await showDialog<String>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Admin Password'),
+                      content: TextField(
+                        controller: controller,
+                        obscureText: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Password',
+                          hintText: 'Repeater admin password',
+                        ),
+                      ),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                        TextButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text('Save')),
+                      ],
+                    ),
+                  );
+                  if (result != null) {
+                    setState(() { _carpeaterPassword = result.isEmpty ? null : result; });
+                    setModalState(() {});
+                    await _settingsService.setCarpeaterPassword(result.isEmpty ? null : result);
+                  }
+                },
+              ),
+              ListTile(
+                title: const Text('Discovery Interval'),
+                trailing: DropdownButton<int>(
+                  value: _carpeaterInterval,
+                  items: const [
+                    DropdownMenuItem(value: 5, child: Text('5s')),
+                    DropdownMenuItem(value: 10, child: Text('10s')),
+                    DropdownMenuItem(value: 15, child: Text('15s')),
+                    DropdownMenuItem(value: 30, child: Text('30s')),
+                    DropdownMenuItem(value: 60, child: Text('60s')),
+                    DropdownMenuItem(value: 120, child: Text('2m')),
+                  ],
+                  onChanged: (value) async {
+                    setState(() { _carpeaterInterval = value!; });
+                    setModalState(() {});
+                    await _settingsService.setCarpeaterInterval(value!);
+                  },
+                ),
+              ),
+            ],
+            const Divider(),
+            SwitchListTile(
               title: const Text('Lock Map Rotation'),
               subtitle: const Text('Prevent map rotation'),
               value: _lockRotationNorth,
@@ -1955,6 +2408,7 @@ $placemarks  </Document>
               trailing: DropdownButton<int>(
                 value: _discoveryTimeoutSeconds,
                 items: const [
+                  DropdownMenuItem(value: 5, child: Text('5s')),
                   DropdownMenuItem(value: 10, child: Text('10s')),
                   DropdownMenuItem(value: 15, child: Text('15s')),
                   DropdownMenuItem(value: 20, child: Text('20s')),
@@ -2226,6 +2680,25 @@ $placemarks  </Document>
               ),
             ),
             ListTile(
+              title: const Text('Analytics'),
+              subtitle: const Text('Time, goals, comparison & repeater stats'),
+              leading: const Icon(Icons.analytics),
+              trailing: const Icon(Icons.arrow_forward),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => AnalyticsScreen(
+                      samples: _samples,
+                      coveragePrecision: _coveragePrecision,
+                      currentPosition: _currentPosition,
+                    ),
+                  ),
+                );
+              },
+            ),
+            ListTile(
               title: const Text('Session History'),
               subtitle: Text(_activeSessionFilter != null 
                   ? 'Filtering by session' 
@@ -2478,6 +2951,31 @@ $placemarks  </Document>
     return Colors.red;
   }
   
+  String _carpeaterStateLabel() {
+    switch (_carpeaterState) {
+      case CarpeaterState.disabled: return 'Off';
+      case CarpeaterState.connecting: return 'Connecting';
+      case CarpeaterState.loggingIn: return 'Login...';
+      case CarpeaterState.loggedIn: return 'Ready';
+      case CarpeaterState.discovering: return 'Scanning';
+      case CarpeaterState.fetchingNeighbours: return 'Fetching';
+      case CarpeaterState.error: return 'Error';
+    }
+  }
+  
+  Color _getDuctingColor(String risk) {
+    switch (risk) {
+      case 'none':
+        return Colors.green;
+      case 'possible':
+        return Colors.orange;
+      case 'likely':
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
+  }
+  
   Future<void> _refreshContacts() async {
     if (!_loraConnected) {
       _showSnackBar('Connect LoRa device first');
@@ -2690,6 +3188,29 @@ $placemarks  </Document>
                 children: [
                   const Text('Response: ', style: TextStyle(fontWeight: FontWeight.bold)),
                   Text('${sample.responseTimeMs} ms'),
+                ],
+              ),
+            ],
+            if (sample.ductingRisk != null) ...[
+              const Divider(height: 16),
+              Row(
+                children: [
+                  const Text('Ducting: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: _getDuctingColor(sample.ductingRisk!).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      DuctingService.riskLabel(sample.ductingRisk!),
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: _getDuctingColor(sample.ductingRisk!),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ],
